@@ -1,0 +1,8 @@
+/target/
+/.anchor/
+/.magicblock-examples/
+/node_modules/
+/.env
+/.env.local
+*.log
+
