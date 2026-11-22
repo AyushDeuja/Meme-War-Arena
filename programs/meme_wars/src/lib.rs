@@ -201,3 +201,37 @@ pub enum GameError {
     #[msg("Arithmetic overflow")]
     Overflow,
 }
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::*;
+
+    #[test]
+    fn match_account_fits_declared_allocation_and_round_trips() {
+        let authority = Pubkey::new_unique();
+        let game = Match {
+            authority,
+            match_id: 7,
+            status: MatchStatus::Scheduled as u8,
+            started_at: 0,
+            ends_at: 0,
+            credit_reserves: [10_000; 2],
+            share_reserves: [1_000; 2],
+            team_scores: [0; 2],
+            players: [PlayerSlot::default(); MAX_PLAYERS],
+            player_count: 0,
+            bump: 254,
+        };
+
+        let mut encoded = Vec::new();
+        game.try_serialize(&mut encoded).unwrap();
+        assert_eq!(encoded.len(), 8 + Match::LEN);
+
+        let decoded = Match::try_deserialize(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.authority, authority);
+        assert_eq!(decoded.match_id, 7);
+        assert_eq!(decoded.credit_reserves, [10_000; 2]);
+        assert_eq!(decoded.share_reserves, [1_000; 2]);
+        assert_eq!(decoded.player_count, 0);
+    }
+}

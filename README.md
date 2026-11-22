@@ -60,10 +60,20 @@ development program keypair is at `target/deploy/meme_wars-keypair.json`, ignore
 by Git. Back it up privately before deleting `target/`; generating a new keypair
 requires updating both `declare_id!` and `Anchor.toml`.
 
-On this Windows host, `cargo check -p meme-wars --locked` succeeds, but
-`anchor build` requires Agave's `cargo build-sbf` toolchain. The Anchor launcher
-could not install it here; run the SBF build in WSL2 Ubuntu with the pinned
-toolchain or on a Linux development host.
+The Phase 0 SBF build and baseline test passed in Ubuntu WSL. Use the pinned
+Anchor CLI 1.0.2 there, with the existing Agave CLI and Node 22 from nvm:
+
+```sh
+cd '/mnt/c/Users/ayush/OneDrive/Desktop/Meme War Arena'
+. ~/.nvm/nvm.sh
+nvm use 22.22.3
+anchor build
+anchor test
+```
+
+Node must be on `PATH` for `anchor test` to launch the script in `Anchor.toml`,
+even though that script runs Rust tests. See [the Phase 0 baseline](docs/phase-0-baseline.md)
+for the exact tested versions and limits of this verification.
 
 For a real ER lifecycle test, initialize and delegate against the base RPC,
 query the MagicBlock router's `getDelegationStatus` for the account's ER endpoint,
