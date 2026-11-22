@@ -43,11 +43,20 @@ pub mod meme_wars {
     /// Run on the ER. Every wallet can claim the round allowance only once.
     pub fn join_match(ctx: Context<MutateMatch>) -> Result<()> {
         let game = &mut ctx.accounts.game;
-        require!(game.status == MatchStatus::Scheduled as u8 || game.status == MatchStatus::Live as u8, GameError::Closed);
+        require!(
+            game.status == MatchStatus::Scheduled as u8 || game.status == MatchStatus::Live as u8,
+            GameError::Closed
+        );
         let wallet = ctx.accounts.player.key();
-        require!(!game.players[..game.player_count as usize].iter().any(|entry| entry.wallet == wallet), GameError::AlreadyJoined);
+        require!(
+            !game.players[..game.player_count as usize]
+                .iter()
+                .any(|entry| entry.wallet == wallet),
+            GameError::AlreadyJoined
+        );
         require!((game.player_count as usize) < MAX_PLAYERS, GameError::Full);
-        let slot = &mut game.players[game.player_count as usize];
+        let index = game.player_count as usize;
+        let slot = &mut game.players[index];
         slot.wallet = wallet;
         slot.credits = STARTING_CREDITS;
         game.player_count += 1;
@@ -57,7 +66,10 @@ pub mod meme_wars {
     /// Start the 90-second round on the ER after players have joined.
     pub fn start_match(ctx: Context<AuthorityMatch>) -> Result<()> {
         let game = &mut ctx.accounts.game;
-        require!(game.status == MatchStatus::Scheduled as u8, GameError::InvalidStatus);
+        require!(
+            game.status == MatchStatus::Scheduled as u8,
+            GameError::InvalidStatus
+        );
         let now = Clock::get()?.unix_timestamp;
         game.started_at = now;
         game.ends_at = now.checked_add(ROUND_SECONDS).ok_or(GameError::Overflow)?;
@@ -150,7 +162,8 @@ pub struct Match {
 }
 
 impl Match {
-    pub const LEN: usize = 32 + 8 + 1 + 8 + 8 + 16 + 16 + 16 + PlayerSlot::LEN * MAX_PLAYERS + 1 + 1;
+    pub const LEN: usize =
+        32 + 8 + 1 + 8 + 8 + 16 + 16 + 16 + PlayerSlot::LEN * MAX_PLAYERS + 1 + 1;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default)]

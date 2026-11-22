@@ -1,6 +1,11 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 
+const keypairPath = 'target/deploy/meme_wars-keypair.json';
+if (fs.existsSync(keypairPath)) {
+  throw new Error(`${keypairPath} already exists; refusing to replace the program identity`);
+}
+
 const jwk = crypto.generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
 const publicKey = Buffer.from(jwk.x, 'base64url');
 const secretKey = Buffer.concat([Buffer.from(jwk.d, 'base64url'), publicKey]);
@@ -16,5 +21,5 @@ for (const byte of publicKey) {
   address = `1${address}`;
 }
 fs.mkdirSync('target/deploy', { recursive: true });
-fs.writeFileSync('target/deploy/meme_wars-keypair.json', JSON.stringify([...secretKey]));
+fs.writeFileSync(keypairPath, JSON.stringify([...secretKey]), { flag: 'wx' });
 console.log(address);
