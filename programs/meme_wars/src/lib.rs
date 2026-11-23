@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
+use std::str::FromStr;
 
 pub mod math;
 
@@ -16,6 +17,8 @@ pub const INITIAL_SHARE_RESERVE: u64 = 1_000 * math::SHARE_SCALE;
 pub const MAX_BUY_CREDITS: u64 = 250;
 pub const MIN_SELL_SHARES: u64 = math::SHARE_SCALE;
 pub const MAX_SELL_SHARES: u64 = 100 * math::SHARE_SCALE;
+pub const APPROVED_ORGANIZER: &str = "7QKBd6PsJ8qsybo5BEA41gh8sPp6YhMBteRdteVyiSgm";
+pub const MAX_ATTEMPTS: u8 = 3;
 
 #[ephemeral]
 #[program]
@@ -28,6 +31,12 @@ pub mod meme_wars {
         match_id: u64,
         verifier: Pubkey,
     ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            Pubkey::from_str(APPROVED_ORGANIZER)
+                .map_err(|_| error!(GameError::InvalidOrganizer))?,
+            GameError::InvalidOrganizer
+        );
         require!(verifier != Pubkey::default(), GameError::InvalidVerifier);
         let game = &mut ctx.accounts.game;
         game.authority = ctx.accounts.authority.key();
@@ -107,6 +116,24 @@ pub mod meme_wars {
         )
     }
 
+    /// Apply a server-measured result signed by both the player and approved verifier.
+    pub fn submit_verified_attempt(
+        ctx: Context<ScoreMatch>,
+        attempt_index: u8,
+        challenge_nonce: u64,
+        score: u16,
+        expires_at: i64,
+    ) -> Result<()> {
+        ctx.accounts.game.apply_verified_attempt(
+            ctx.accounts.player.key(),
+            attempt_index,
+            challenge_nonce,
+            score,
+            expires_at,
+            Clock::get()?.unix_timestamp,
+        )
+    }
+
     /// Start the 90-second round on the ER after players have joined.
     pub fn start_match(ctx: Context<AuthorityMatch>) -> Result<()> {
         ctx.accounts.game.start(Clock::get()?.unix_timestamp)
@@ -170,6 +197,14 @@ pub struct MutateMatch<'info> {
     #[account(mut, seeds = [b"match", game.authority.as_ref(), &game.match_id.to_le_bytes()], bump = game.bump)]
     pub game: Account<'info, Match>,
     pub player: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ScoreMatch<'info> {
+    #[account(mut, has_one = verifier, seeds = [b"match", game.authority.as_ref(), &game.match_id.to_le_bytes()], bump = game.bump)]
+    pub game: Account<'info, Match>,
+    pub player: Signer<'info>,
+    pub verifier: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -358,6 +393,59 @@ impl Match {
         Ok(())
     }
 
+    pub fn apply_verified_attempt(
+        &mut self,
+        wallet: Pubkey,
+        attempt_index: u8,
+        challenge_nonce: u64,
+        score: u16,
+        expires_at: i64,
+        now: i64,
+    ) -> Result<()> {
+        self.require_trade_open(now)?;
+        require!(expires_at >= now, GameError::AttemptExpired);
+        require!(matches!(score, 0 | 30 | 60 | 100), GameError::InvalidScore);
+        require!(challenge_nonce != 0, GameError::InvalidChallengeNonce);
+        let player_index = self.player_index(wallet)?;
+        let player = &self.players[player_index];
+        require!(
+            player.team == 1 || player.team == 2,
+            GameError::TeamNotChosen
+        );
+        require!(player.attempts_used < MAX_ATTEMPTS, GameError::AttemptLimit);
+        let next_index = player
+            .attempts_used
+            .checked_add(1)
+            .ok_or(GameError::Overflow)?;
+        require!(attempt_index == next_index, GameError::InvalidAttemptIndex);
+        require!(
+            !player.used_challenge_nonces[..usize::from(player.attempts_used)]
+                .contains(&challenge_nonce),
+            GameError::InvalidChallengeNonce
+        );
+        let new_best = player.best_score.max(score);
+        let score_delta = u64::from(new_best - player.best_score);
+        let team_index = usize::from(player.team - 1);
+        let new_team_score = self.team_scores[team_index]
+            .checked_add(score_delta)
+            .ok_or(GameError::Overflow)?;
+        let perfect_attempts = if score == 100 {
+            player
+                .perfect_attempts
+                .checked_add(1)
+                .ok_or(GameError::Overflow)?
+        } else {
+            player.perfect_attempts
+        };
+        self.team_scores[team_index] = new_team_score;
+        let player = &mut self.players[player_index];
+        player.best_score = new_best;
+        player.attempts_used = next_index;
+        player.used_challenge_nonces[usize::from(attempt_index - 1)] = challenge_nonce;
+        player.perfect_attempts = perfect_attempts;
+        Ok(())
+    }
+
     pub fn join(&mut self, wallet: Pubkey, now: i64) -> Result<()> {
         self.require_registration_open(now)?;
         require!(
@@ -458,10 +546,12 @@ pub struct PlayerSlot {
     pub best_score: u16,
     pub attempts_used: u8,
     pub trade_nonce: u64,
+    pub used_challenge_nonces: [u64; 3],
+    pub perfect_attempts: u8,
 }
 
 impl PlayerSlot {
-    pub const LEN: usize = 32 + 8 + 8 + 8 + 1 + 2 + 1 + 8;
+    pub const LEN: usize = 32 + 8 + 8 + 8 + 1 + 2 + 1 + 8 + 24 + 1;
 }
 
 fn player_shares(player: &PlayerSlot, pool_index: usize) -> u64 {
@@ -553,6 +643,20 @@ pub enum GameError {
     EmptyReserve,
     #[msg("The trade would produce zero output")]
     ZeroOutput,
+    #[msg("Only the approved demo organizer may create a match")]
+    InvalidOrganizer,
+    #[msg("The scoring team has not been chosen")]
+    TeamNotChosen,
+    #[msg("The timing challenge result has expired")]
+    AttemptExpired,
+    #[msg("The timing score is invalid")]
+    InvalidScore,
+    #[msg("The timing challenge nonce is invalid or already used")]
+    InvalidChallengeNonce,
+    #[msg("The three-attempt limit has been reached")]
+    AttemptLimit,
+    #[msg("The attempt index is not next in sequence")]
+    InvalidAttemptIndex,
 }
 
 #[cfg(test)]
@@ -650,7 +754,7 @@ mod baseline_tests {
 
         let mut encoded = Vec::new();
         game.try_serialize(&mut encoded).unwrap();
-        assert_eq!(Match::LEN, 828);
+        assert_eq!(Match::LEN, 1078);
         assert_eq!(encoded.len(), 8 + Match::LEN);
         assert!(encoded.len() <= 10_240);
 
@@ -859,5 +963,84 @@ mod baseline_tests {
             assert!(after_k >= before_k);
             assert!(conserved(&game));
         }
+    }
+
+    #[test]
+    fn verified_attempts_track_best_score_and_each_perfect_attempt() {
+        let (mut game, frog, cat) = live_match();
+        game.apply_verified_attempt(frog, 1, 11, 60, 20, 10)
+            .unwrap();
+        assert_eq!(game.team_scores, [60, 0]);
+        game.apply_verified_attempt(frog, 2, 12, 30, 20, 11)
+            .unwrap();
+        assert_eq!(game.team_scores, [60, 0]);
+        game.apply_verified_attempt(frog, 3, 13, 100, 20, 12)
+            .unwrap();
+        game.apply_verified_attempt(cat, 1, 21, 100, 20, 12)
+            .unwrap();
+        game.apply_verified_attempt(cat, 2, 22, 100, 20, 12)
+            .unwrap();
+        assert_eq!(game.team_scores, [100, 100]);
+        assert_eq!(game.players[0].perfect_attempts, 1);
+        assert_eq!(game.players[1].perfect_attempts, 2);
+        assert_eq!(game.players[0].used_challenge_nonces, [11, 12, 13]);
+        assert_eq!(game.players[0].attempts_used, 3);
+        assert_eq!(game.outcome, MatchOutcome::Pending as u8);
+    }
+
+    #[test]
+    fn invalid_attempts_do_not_mutate_score_or_attempt_budget() {
+        let (mut game, frog, _) = live_match();
+        assert!(game.apply_verified_attempt(frog, 1, 11, 60, 9, 10).is_err());
+        assert!(game
+            .apply_verified_attempt(frog, 2, 11, 60, 20, 10)
+            .is_err());
+        assert!(game.apply_verified_attempt(frog, 1, 0, 60, 20, 10).is_err());
+        assert!(game
+            .apply_verified_attempt(frog, 1, 11, 99, 20, 10)
+            .is_err());
+        assert!(game
+            .apply_verified_attempt(Pubkey::new_unique(), 1, 11, 60, 20, 10)
+            .is_err());
+        assert_eq!(game.team_scores, [0, 0]);
+        assert_eq!(game.players[0].attempts_used, 0);
+        game.apply_verified_attempt(frog, 1, 11, 60, 20, 10)
+            .unwrap();
+        assert!(game
+            .apply_verified_attempt(frog, 1, 11, 60, 20, 10)
+            .is_err());
+        assert!(game
+            .apply_verified_attempt(frog, 2, 11, 60, 20, 10)
+            .is_err());
+        assert_eq!(game.team_scores, [60, 0]);
+        assert_eq!(game.players[0].attempts_used, 1);
+        game.apply_verified_attempt(frog, 2, 12, 0, 20, 10).unwrap();
+        game.apply_verified_attempt(frog, 3, 13, 30, 20, 10)
+            .unwrap();
+        assert!(game
+            .apply_verified_attempt(frog, 4, 14, 100, 20, 10)
+            .is_err());
+        assert_eq!(game.team_scores, [60, 0]);
+        assert_eq!(game.players[0].attempts_used, 3);
+        assert!(game
+            .apply_verified_attempt(frog, 4, 14, 100, 100, 90)
+            .is_err());
+    }
+
+    #[test]
+    fn unchosen_team_and_expired_round_cannot_score() {
+        let (mut game, frog, _) = live_match();
+        let unchosen = Pubkey::new_unique();
+        game.join(unchosen, 1).unwrap();
+        assert!(game
+            .apply_verified_attempt(unchosen, 1, 33, 30, 20, 10)
+            .is_err());
+        assert!(game
+            .apply_verified_attempt(frog, 1, 33, 30, 100, 90)
+            .is_err());
+        game.close_round(90).unwrap();
+        assert!(game
+            .apply_verified_attempt(frog, 1, 33, 30, 100, 91)
+            .is_err());
     }
 }

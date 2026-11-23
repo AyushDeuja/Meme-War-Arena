@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createPrivateKey, sign } from "node:crypto";
 import * as anchor from "@coral-xyz/anchor";
 import * as magicblock from "@magicblock-labs/ephemeral-rollups-sdk";
+import { createVerifierServer } from "../verifier/server.mjs";
 
 const { AnchorProvider, BN, Program, Wallet, web3 } = anchor.default ?? anchor;
 const { DELEGATION_PROGRAM_ID, GetCommitmentSignature } = magicblock;
@@ -27,7 +29,32 @@ const expectedMessages = {
   InsufficientShares: "This wallet has insufficient virtual shares",
   SlippageExceeded: "The trade output is below the requested minimum",
   InvalidNonce: "The trade nonce does not match",
+  InvalidOrganizer: "Only the approved demo organizer may create a match",
+  InvalidScore: "The timing score is invalid",
+  InvalidChallengeNonce: "The timing challenge nonce is invalid or already used",
+  InvalidAttemptIndex: "The attempt index is not next in sequence",
+  AttemptLimit: "The three-attempt limit has been reached",
+  AttemptExpired: "The timing challenge result has expired",
+  TeamNotChosen: "The scoring team has not been chosen",
 };
+
+function signWalletMessage(keypair, message) {
+  const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([prefix, Buffer.from(keypair.secretKey.subarray(0, 32))]),
+    format: "der", type: "pkcs8",
+  });
+  return sign(null, Buffer.from(message), privateKey).toString("base64");
+}
+
+async function postJson(baseUrl, route, body) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const value = await response.json();
+  if (!response.ok) throw new Error(`${route}: ${value.error}`);
+  return value;
+}
 
 function buyOutput(credits, shares, input) {
   const k = credits * shares;
@@ -44,6 +71,9 @@ function snapshot(state) {
       wallet: player.wallet.toBase58(), credits: String(player.credits),
       frogShares: String(player.frogShares), catShares: String(player.catShares),
       tradeNonce: String(player.tradeNonce),
+      bestScore: player.bestScore, attemptsUsed: player.attemptsUsed,
+      perfectAttempts: player.perfectAttempts,
+      usedChallengeNonces: player.usedChallengeNonces.map(String),
     })),
   };
 }
@@ -86,12 +116,36 @@ async function main() {
   const programId = new web3.PublicKey(idl.address);
   const secretBytes = JSON.parse(await readFile(walletPath, "utf8"));
   const wallet = new Wallet(web3.Keypair.fromSecretKey(Uint8Array.from(secretBytes)));
-  const verifier = web3.Keypair.generate().publicKey;
+  const verifier = web3.Keypair.generate();
   const cat = web3.Keypair.generate();
   const base = new web3.Connection(baseUrl, "confirmed");
   const er = new web3.Connection(erUrl, "confirmed");
   const baseProgram = new Program(idl, new AnchorProvider(base, wallet, { commitment: "confirmed" }));
   const erProgram = new Program(idl, new AnchorProvider(er, wallet, { commitment: "confirmed" }));
+  const verifierServer = createVerifierServer({ idl, verifier, erUrl });
+  await new Promise((resolve) => verifierServer.listen(0, "127.0.0.1", resolve));
+  verifierServer.unref();
+  const verifierUrl = `http://127.0.0.1:${verifierServer.address().port}`;
+
+  async function completeAttempt(playerKeypair, waitMs = 1_500) {
+    const match = game.toBase58();
+    const player = playerKeypair.publicKey.toBase58();
+    const auth = await postJson(verifierUrl, "/auth/nonce", { match, wallet: player });
+    const challenge = await postJson(verifierUrl, "/challenge", {
+      match, wallet: player, authNonce: auth.nonce,
+      signature: signWalletMessage(playerKeypair, auth.message),
+    });
+    await sleep(waitMs);
+    const result = await postJson(verifierUrl, "/attempt", { id: challenge.id, press: true });
+    assert.ok([0, 30, 60, 100].includes(result.score));
+    const transaction = web3.Transaction.from(Buffer.from(result.transaction, "base64"));
+    transaction.partialSign(playerKeypair);
+    const signature = await er.sendRawTransaction(transaction.serialize());
+    const confirmation = await er.confirmTransaction(signature, "confirmed");
+    assert.equal(confirmation.value.err, null);
+    console.log(`ER verified attempt ${player} #${challenge.attemptIndex}: ${signature} score ${result.score}`);
+    return { ...result, id: challenge.id, nonce: challenge.nonce, signature };
+  }
 
   await Promise.all([base.getVersion(), er.getVersion()]);
   if ((await base.getBalance(wallet.publicKey)) < web3.LAMPORTS_PER_SOL) {
@@ -105,23 +159,34 @@ async function main() {
     programId,
   );
   console.log(`Program ${programId.toBase58()} | match ${matchId.toString()} | PDA ${game.toBase58()}`);
-  console.log(`Base ${baseUrl} | ER ${erUrl} | authority ${wallet.publicKey.toBase58()} | verifier ${verifier.toBase58()}`);
+  assert.equal(wallet.publicKey.toBase58(), "7QKBd6PsJ8qsybo5BEA41gh8sPp6YhMBteRdteVyiSgm");
+  console.log(`Base ${baseUrl} | ER ${erUrl} | authority ${wallet.publicKey.toBase58()} | verifier ${verifier.publicKey.toBase58()}`);
 
   const initSignature = await baseProgram.methods
-    .initializeMatch(matchId, verifier)
+    .initializeMatch(matchId, verifier.publicKey)
     .accountsPartial({ game, authority: wallet.publicKey })
     .rpc();
   console.log(`Base initialize: ${initSignature}`);
   const initial = await baseProgram.account.match.fetch(game);
   const initialAccount = await base.getAccountInfo(game);
-  assert.equal(initialAccount.data.length, 836);
+  assert.equal(initialAccount.data.length, 1086);
   assert.equal(initial.playerCount, 0);
   assert.equal(initial.matchId.toString(), matchId.toString());
-  assert.equal(initial.verifier.toBase58(), verifier.toBase58());
+  assert.equal(initial.verifier.toBase58(), verifier.publicKey.toBase58());
   assert.deepEqual(initial.creditReserves.map((value) => value.toString()), ["10000", "10000"]);
   assert.deepEqual(initial.shareReserves.map((value) => value.toString()), ["1000000000", "1000000000"]);
+  const catFunding = await base.requestAirdrop(cat.publicKey, web3.LAMPORTS_PER_SOL);
+  await base.confirmTransaction(catFunding, "confirmed");
+  const [unauthorizedGame] = web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("match"), cat.publicKey.toBuffer(), matchId.toArrayLike(Buffer, "le", 8)],
+    programId,
+  );
+  await expectRejected("unapproved organizer initialization", () => baseProgram.methods
+    .initializeMatch(matchId, verifier.publicKey)
+    .accountsPartial({ game: unauthorizedGame, authority: cat.publicKey })
+    .signers([cat]).rpc(), "InvalidOrganizer");
   await expectRejected("duplicate initialization", () => baseProgram.methods
-    .initializeMatch(matchId, verifier)
+    .initializeMatch(matchId, verifier.publicKey)
     .accountsPartial({ game, authority: wallet.publicKey })
     .rpc());
 
@@ -256,9 +321,69 @@ async function main() {
   assert.ok(tradedState.players[0].credits.toNumber() <= 1_000);
   assert.ok(tradedState.players[1].credits.toNumber() <= 1_000);
 
+  const wrongVerifier = web3.Keypair.generate();
+  const scoreExpiry = started.endsAt;
+  await expectRejected("score without verifier signature", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(1001), 100, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey }).rpc());
+  await expectRejected("wrong verifier signer", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(1002), 100, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: wrongVerifier.publicKey })
+    .signers([wrongVerifier]).rpc());
+  await expectRejected("forged numeric score", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(1003), 99, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc(), "InvalidScore");
+  await expectRejected("expired result", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(1004), 100, new BN(Math.floor(Date.now() / 1_000) - 1))
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc(), "AttemptExpired");
+  await expectRejected("other wallet scoring slot", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(1005), 100, scoreExpiry)
+    .accountsPartial({ game, player: outsiderTrader.publicKey, verifier: verifier.publicKey })
+    .signers([outsiderTrader, verifier]).rpc(), "NotRegistered");
+  const invalidAuth = await postJson(verifierUrl, "/auth/nonce", {
+    match: game.toBase58(), wallet: cat.publicKey.toBase58(),
+  });
+  await expectRejected("wrong wallet challenge authentication", () => postJson(verifierUrl, "/challenge", {
+    match: game.toBase58(), wallet: cat.publicKey.toBase58(), authNonce: invalidAuth.nonce,
+    signature: signWalletMessage(wallet.payer, invalidAuth.message),
+  }));
+  const frogResult = await completeAttempt(wallet.payer);
+  const afterScore = await erProgram.account.match.fetch(game);
+  assert.equal(afterScore.players[0].attemptsUsed, 1);
+  assert.equal(afterScore.players[0].bestScore, frogResult.score);
+  assert.equal(afterScore.teamScores[0].toNumber(), frogResult.score);
+  await expectRejected("reused challenge nonce", () => erProgram.methods
+    .submitVerifiedAttempt(2, new BN(frogResult.nonce), 100, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc(), "InvalidChallengeNonce");
+  await expectRejected("reused server challenge", () => postJson(verifierUrl, "/attempt", {
+    id: frogResult.id, press: true,
+  }));
+  await erProgram.methods.submitVerifiedAttempt(2, new BN(1006), 30, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc();
+  await erProgram.methods.submitVerifiedAttempt(3, new BN(1007), 100, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc();
+  await expectRejected("fourth attempt", () => erProgram.methods
+    .submitVerifiedAttempt(4, new BN(1006), 100, scoreExpiry)
+    .accountsPartial({ game, player: wallet.publicKey, verifier: verifier.publicKey })
+    .signers([verifier]).rpc(), "AttemptLimit");
+  const scored = await erProgram.account.match.fetch(game);
+  assert.equal(scored.teamScores[0].toNumber(), 100);
+  assert.equal(scored.teamScores[1].toNumber(), 0);
+  assert.equal(scored.players[0].perfectAttempts,
+    (frogResult.score === 100 ? 1 : 0) + 1);
+
   const livePlayer = web3.Keypair.generate();
   await erProgram.methods.joinMatch()
     .accountsPartial({ game, player: livePlayer.publicKey }).signers([livePlayer]).rpc();
+  await expectRejected("unchosen scoring team", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(2001), 30, scoreExpiry)
+    .accountsPartial({ game, player: livePlayer.publicKey, verifier: verifier.publicKey })
+    .signers([livePlayer, verifier]).rpc(), "TeamNotChosen");
   await erProgram.methods.chooseTeam(2)
     .accountsPartial({ game, player: livePlayer.publicKey }).signers([livePlayer]).rpc();
   const liveState = await erProgram.account.match.fetch(game);
@@ -297,6 +422,10 @@ async function main() {
   await expectRejected("trade after close", () => erProgram.methods
     .buyShares(0, new BN(1), new BN(1), new BN(2))
     .accountsPartial({ game, player: wallet.publicKey }).rpc(), "Closed");
+  await expectRejected("score after close", () => erProgram.methods
+    .submitVerifiedAttempt(1, new BN(2002), 100, new BN(Math.floor(Date.now() / 1_000) + 30))
+    .accountsPartial({ game, player: livePlayer.publicKey, verifier: verifier.publicKey })
+    .signers([livePlayer, verifier]).rpc(), "Closed");
   const closedState = await erProgram.account.match.fetch(game);
   assert.equal(closedState.status, 2);
   assert.equal(closedState.outcome, 0);
@@ -330,7 +459,8 @@ async function main() {
       && JSON.stringify(snapshot(state)) === JSON.stringify(tradedSnapshot) && state;
   });
 
-  console.log("PASS: virtual trades, 90-second ER lifecycle, and final base-layer state match");
+  verifierServer.close();
+  console.log("PASS: server-verified scores, virtual trades, and final base-layer state match");
 }
 
 main().catch((error) => {

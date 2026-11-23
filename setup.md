@@ -92,7 +92,7 @@ Create an example env file, without real credentials:
 NEXT_PUBLIC_SOLANA_RPC_URL=https://api.devnet.solana.com
 NEXT_PUBLIC_MAGICBLOCK_ER_RPC_URL=REPLACE_WITH_CURRENT_MAGICBLOCK_DEVNET_ER_RPC
 NEXT_PUBLIC_PROGRAM_ID=REPLACE_AFTER_DEPLOY
-VERIFIER_PRIVATE_KEY=SERVER_ONLY_REPLACE_WITH_SECURE_KEY_REFERENCE
+VERIFIER_KEYPAIR_PATH=/absolute/server-only/path/to/verifier-keypair.json
 ```
 
 **Do not** add a secret to any `NEXT_PUBLIC_` variable. Never check `.env.local` into git. Treat endpoint values as placeholders until confirmed in current MagicBlock docs.

@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:er:local": "node tests/er-lifecycle.mjs"
+    "test:er:local": "node tests/er-lifecycle.mjs",
+    "test:verifier": "node verifier/logic.test.mjs && node verifier/server.test.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
