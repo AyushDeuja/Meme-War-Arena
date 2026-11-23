@@ -11,6 +11,17 @@ const baseUrl = process.env.BASE_RPC_URL ?? "http://127.0.0.1:8899";
 const erUrl = process.env.ER_RPC_URL ?? "http://127.0.0.1:7799";
 const walletPath = process.env.ANCHOR_WALLET ?? path.join(homedir(), ".config/solana/id.json");
 const localValidator = new web3.PublicKey("mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev");
+const expectedMessages = {
+  TeamsMissing: "Both teams need a player before the match starts",
+  NotRegistered: "The player has not joined this match",
+  AlreadyJoined: "This wallet already joined",
+  InvalidTeam: "Choose Frog or Cat",
+  TeamAlreadyChosen: "The player already chose a team",
+  TeamFull: "This team's roster is full",
+  InvalidStatus: "The match is in the wrong state",
+  TooEarly: "The match deadline has not arrived",
+  Closed: "The match is closed",
+};
 
 async function poll(label, operation, timeoutMs = 45_000) {
   const deadline = Date.now() + timeoutMs;
@@ -27,6 +38,23 @@ async function poll(label, operation, timeoutMs = 45_000) {
   throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
+async function expectRejected(label, operation, expectedCode) {
+  try {
+    await operation();
+  } catch (error) {
+    const detail = `${error} ${JSON.stringify(error.error?.errorCode ?? {})} ${JSON.stringify(error.logs ?? [])}`;
+    if (expectedCode && !detail.includes(expectedCode)
+      && !detail.includes(expectedMessages[expectedCode])) {
+      throw new Error(`${label} failed for the wrong reason: ${detail}`);
+    }
+    console.log(`Rejected as expected: ${label}`);
+    return;
+  }
+  throw new Error(`${label} unexpectedly succeeded`);
+}
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 async function main() {
   assert.equal(typeof GetCommitmentSignature, "function", "MagicBlock commitment helper is unavailable");
   const idl = JSON.parse(await readFile("target/idl/meme_wars.json", "utf8"));
@@ -34,6 +62,7 @@ async function main() {
   const secretBytes = JSON.parse(await readFile(walletPath, "utf8"));
   const wallet = new Wallet(web3.Keypair.fromSecretKey(Uint8Array.from(secretBytes)));
   const verifier = web3.Keypair.generate().publicKey;
+  const cat = web3.Keypair.generate();
   const base = new web3.Connection(baseUrl, "confirmed");
   const er = new web3.Connection(erUrl, "confirmed");
   const baseProgram = new Program(idl, new AnchorProvider(base, wallet, { commitment: "confirmed" }));
@@ -66,6 +95,10 @@ async function main() {
   assert.equal(initial.verifier.toBase58(), verifier.toBase58());
   assert.deepEqual(initial.creditReserves.map((value) => value.toString()), ["10000", "10000"]);
   assert.deepEqual(initial.shareReserves.map((value) => value.toString()), ["1000000000", "1000000000"]);
+  await expectRejected("duplicate initialization", () => baseProgram.methods
+    .initializeMatch(matchId, verifier)
+    .accountsPartial({ game, authority: wallet.publicKey })
+    .rpc());
 
   const delegateSignature = await baseProgram.methods
     .delegateMatch(matchId)
@@ -82,15 +115,111 @@ async function main() {
     return account?.owner.equals(programId) && account;
   });
 
+  await expectRejected("start without teams", () => erProgram.methods
+    .startMatch().accountsPartial({ game, authority: wallet.publicKey }).rpc(), "TeamsMissing");
+  await expectRejected("unregistered team choice", () => erProgram.methods
+    .chooseTeam(2).accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc(), "NotRegistered");
+
   const joinSignature = await erProgram.methods
     .joinMatch()
     .accountsPartial({ game, player: wallet.publicKey })
     .rpc();
-  console.log(`ER join: ${joinSignature}`);
-  await poll("ER match update", async () => {
-    const state = await erProgram.account.match.fetch(game);
-    return state.playerCount === 1 && state.players[0].credits.toString() === "1000" && state;
-  });
+  console.log(`ER Frog join: ${joinSignature}`);
+  await expectRejected("duplicate join", () => erProgram.methods
+    .joinMatch().accountsPartial({ game, player: wallet.publicKey })
+    .preInstructions([web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 180_000 })])
+    .rpc(), "AlreadyJoined");
+  const reloaded = await erProgram.account.match.fetch(game);
+  assert.equal(reloaded.playerCount, 1);
+  assert.equal(reloaded.players[0].credits.toString(), "1000");
+  await expectRejected("invalid team", () => erProgram.methods
+    .chooseTeam(3).accountsPartial({ game, player: wallet.publicKey }).rpc(), "InvalidTeam");
+  const frogTeamSignature = await erProgram.methods
+    .chooseTeam(1).accountsPartial({ game, player: wallet.publicKey }).rpc();
+  console.log(`ER Frog team: ${frogTeamSignature}`);
+  await expectRejected("team change", () => erProgram.methods
+    .chooseTeam(2).accountsPartial({ game, player: wallet.publicKey }).rpc(), "TeamAlreadyChosen");
+  await expectRejected("start with one team", () => erProgram.methods
+    .startMatch().accountsPartial({ game, authority: wallet.publicKey }).rpc(), "TeamsMissing");
+
+  const catJoinSignature = await erProgram.methods
+    .joinMatch().accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc();
+  console.log(`ER Cat join: ${catJoinSignature}`);
+  const catTeamSignature = await erProgram.methods
+    .chooseTeam(2).accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc();
+  console.log(`ER Cat team: ${catTeamSignature}`);
+
+  for (const player of Array.from({ length: 4 }, () => web3.Keypair.generate())) {
+    await erProgram.methods.joinMatch().accountsPartial({ game, player: player.publicKey }).signers([player]).rpc();
+    await erProgram.methods.chooseTeam(1).accountsPartial({ game, player: player.publicKey }).signers([player]).rpc();
+  }
+  const overflowPlayer = web3.Keypair.generate();
+  await erProgram.methods.joinMatch()
+    .accountsPartial({ game, player: overflowPlayer.publicKey }).signers([overflowPlayer]).rpc();
+  await expectRejected("sixth Frog roster slot", () => erProgram.methods
+    .chooseTeam(1).accountsPartial({ game, player: overflowPlayer.publicKey })
+    .signers([overflowPlayer]).rpc(), "TeamFull");
+  await erProgram.methods.chooseTeam(2)
+    .accountsPartial({ game, player: overflowPlayer.publicKey }).signers([overflowPlayer]).rpc();
+
+  await expectRejected("unauthorized start", () => erProgram.methods
+    .startMatch().accountsPartial({ game, authority: cat.publicKey }).signers([cat]).rpc());
+  const startSignature = await erProgram.methods
+    .startMatch().accountsPartial({ game, authority: wallet.publicKey }).rpc();
+  console.log(`ER start: ${startSignature}`);
+  const started = await erProgram.account.match.fetch(game);
+  assert.equal(started.status, 1);
+  assert.equal(started.endsAt.sub(started.startedAt).toNumber(), 90);
+  await expectRejected("duplicate start", () => erProgram.methods
+    .startMatch().accountsPartial({ game, authority: wallet.publicKey })
+    .preInstructions([web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 180_001 })])
+    .rpc(), "InvalidStatus");
+  await expectRejected("early close", () => erProgram.methods
+    .closeMatch().accountsPartial({ game, caller: cat.publicKey }).signers([cat]).rpc(), "TooEarly");
+  await expectRejected("premature undelegation", () => erProgram.methods
+    .undelegateMatch().accountsPartial({ game, authority: wallet.publicKey }).rpc(), "InvalidStatus");
+
+  const livePlayer = web3.Keypair.generate();
+  await erProgram.methods.joinMatch()
+    .accountsPartial({ game, player: livePlayer.publicKey }).signers([livePlayer]).rpc();
+  await erProgram.methods.chooseTeam(2)
+    .accountsPartial({ game, player: livePlayer.publicKey }).signers([livePlayer]).rpc();
+  const liveState = await erProgram.account.match.fetch(game);
+  assert.equal(liveState.playerCount, 8);
+  assert.equal(liveState.players[7].credits.toString(), "1000");
+
+  let closeSignature;
+  const closeDeadline = Date.now() + 135_000;
+  while (!closeSignature && Date.now() < closeDeadline) {
+    const remaining = liveState.endsAt.toNumber() * 1000 - Date.now();
+    if (remaining > 0) {
+      await sleep(Math.min(remaining + 200, 2_000));
+      continue;
+    }
+    try {
+      closeSignature = await erProgram.methods.closeMatch()
+        .accountsPartial({ game, caller: cat.publicKey }).signers([cat]).rpc();
+    } catch (error) {
+      if (!`${error}`.includes("TooEarly")) throw error;
+      await sleep(500);
+    }
+  }
+  assert.ok(closeSignature, "the ER clock did not reach the 90-second deadline");
+  console.log(`ER close: ${closeSignature}`);
+  await expectRejected("duplicate close", () => erProgram.methods
+    .closeMatch().accountsPartial({ game, caller: cat.publicKey }).signers([cat])
+    .preInstructions([web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 180_002 })])
+    .rpc(), "InvalidStatus");
+  const latePlayer = web3.Keypair.generate();
+  await expectRejected("join after deadline", () => erProgram.methods
+    .joinMatch().accountsPartial({ game, player: latePlayer.publicKey })
+    .signers([latePlayer]).rpc(), "Closed");
+  await expectRejected("team choice after close", () => erProgram.methods
+    .chooseTeam(1).accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc(), "Closed");
+  const closedState = await erProgram.account.match.fetch(game);
+  assert.equal(closedState.status, 2);
+  assert.equal(closedState.outcome, 0);
+  assert.equal(closedState.finalizedAt.toString(), "0");
 
   const commitSignature = await erProgram.methods
     .commitMatch()
@@ -101,7 +230,8 @@ async function main() {
   console.log(`Base commit: ${baseCommitSignature}`);
   await poll("committed state on base", async () => {
     const state = await baseProgram.account.match.fetch(game);
-    return state.playerCount === 1 && state.players[0].credits.toString() === "1000" && state;
+    return state.playerCount === 8 && state.status === 2
+      && state.players.every((player, index) => index >= 8 || player.credits.toString() === "1000") && state;
   });
 
   const undelegateSignature = await erProgram.methods
@@ -115,10 +245,11 @@ async function main() {
     const account = await base.getAccountInfo(game);
     if (!account?.owner.equals(programId)) return false;
     const state = await baseProgram.account.match.fetch(game);
-    return state.playerCount === 1 && state.players[0].credits.toString() === "1000" && state;
+    return state.playerCount === 8 && state.status === 2
+      && state.players.every((player, index) => index >= 8 || player.credits.toString() === "1000") && state;
   });
 
-  console.log("PASS: ER update and final base-layer state match");
+  console.log("PASS: 90-second ER lifecycle and final base-layer state match");
 }
 
 main().catch((error) => {

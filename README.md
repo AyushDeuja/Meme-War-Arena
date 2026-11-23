@@ -2,7 +2,7 @@
 
 This is the project starting point for the game described in [idea.md](idea.md),
 [requirement.md](requirement.md), and [setup.md](setup.md). The single `Match` PDA holds
-two virtual pools and up to ten player slots (five per team in the planned game).
+two virtual pools and up to ten player slots (five per team).
 It is created on Solana, delegated to a MagicBlock Ephemeral Rollup for round
 updates, and later committed and undelegated to Solana.
 
@@ -14,13 +14,18 @@ updates, and later committed and undelegated to Solana.
   can sign the delegation instruction.
 - `join_match`: grants a wallet 1,000 virtual credits once, for a maximum of ten
   wallets. Run this and other delegated state changes on the ER.
-- `start_match`: sets the 90-second start and end times on the ER.
+- `choose_team`: lets a registered wallet claim one immutable Frog or Cat slot,
+  with five slots per team.
+- `start_match`: the match authority starts the 90-second round after both teams
+  have at least one player. The program clock sets the deadline.
+- `close_match`: any signer can move an expired round to `Finalizing`. Joins and
+  team choices are rejected at the deadline or after close.
 - `commit_match` and `undelegate_match`: schedule the MagicBlock settlement intent
-  from the ER. Confirm its base-layer completion separately.
+  from the ER. Commit is allowed while live or finalizing; undelegation requires
+  finalizing. Confirm base-layer completion separately.
 
-Trading, team assignment, signed score verification, winner calculation, and
-deadline enforcement are the next implementation steps. Do not represent this
-scaffold as a playable or deployed game.
+Trading, signed score verification, and winner calculation are future phases.
+`Finalizing` still has a pending outcome; this is not yet a playable game.
 
 ## Frontend
 
@@ -87,7 +92,7 @@ is the integration reference. Keep base, router, and ER connections distinct.
 | --- | --- | --- | --- |
 | Match PDA (`match`, authority, little-endian match ID) | Base Solana | Program on ER after delegation | Commit and undelegate to base |
 
-The match is 715 bytes including the Anchor discriminator, below MagicBlock's
+The match is 756 bytes including the Anchor discriminator, below MagicBlock's
 10,240-byte commit limit. The authority funds creation and delegation. The
 prototype uses one match at a time; later client code must verify router
 placement and wait for delegation and settlement propagation before changing

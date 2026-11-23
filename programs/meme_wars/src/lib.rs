@@ -8,6 +8,7 @@ pub mod math;
 declare_id!("FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs");
 
 pub const MAX_PLAYERS: usize = 10;
+pub const MAX_TEAM_PLAYERS: usize = 5;
 pub const ROUND_SECONDS: i64 = 90;
 pub const STARTING_CREDITS: u64 = 1_000;
 pub const INITIAL_CREDIT_RESERVE: u64 = 10_000;
@@ -53,43 +54,33 @@ pub mod meme_wars {
 
     /// Run on the ER. Every wallet can claim the round allowance only once.
     pub fn join_match(ctx: Context<MutateMatch>) -> Result<()> {
-        let game = &mut ctx.accounts.game;
-        require!(
-            game.status == MatchStatus::Scheduled as u8 || game.status == MatchStatus::Live as u8,
-            GameError::Closed
-        );
-        let wallet = ctx.accounts.player.key();
-        require!(
-            !game.players[..game.player_count as usize]
-                .iter()
-                .any(|entry| entry.wallet == wallet),
-            GameError::AlreadyJoined
-        );
-        require!((game.player_count as usize) < MAX_PLAYERS, GameError::Full);
-        let index = game.player_count as usize;
-        let slot = &mut game.players[index];
-        slot.wallet = wallet;
-        slot.credits = STARTING_CREDITS;
-        game.player_count += 1;
-        Ok(())
+        ctx.accounts
+            .game
+            .join(ctx.accounts.player.key(), Clock::get()?.unix_timestamp)
+    }
+
+    /// Reserve one of five scoring slots for a registered wallet on the ER.
+    pub fn choose_team(ctx: Context<MutateMatch>, team: u8) -> Result<()> {
+        ctx.accounts.game.choose_team(
+            ctx.accounts.player.key(),
+            team,
+            Clock::get()?.unix_timestamp,
+        )
     }
 
     /// Start the 90-second round on the ER after players have joined.
     pub fn start_match(ctx: Context<AuthorityMatch>) -> Result<()> {
-        let game = &mut ctx.accounts.game;
-        require!(
-            game.status == MatchStatus::Scheduled as u8,
-            GameError::InvalidStatus
-        );
-        let now = Clock::get()?.unix_timestamp;
-        game.started_at = now;
-        game.ends_at = now.checked_add(ROUND_SECONDS).ok_or(GameError::Overflow)?;
-        game.status = MatchStatus::Live as u8;
-        Ok(())
+        ctx.accounts.game.start(Clock::get()?.unix_timestamp)
+    }
+
+    /// Anyone may close an expired round; its outcome remains pending.
+    pub fn close_match(ctx: Context<CloseMatch>) -> Result<()> {
+        ctx.accounts.game.close_round(Clock::get()?.unix_timestamp)
     }
 
     /// Persist the current delegated state to Solana. Call on the ER.
     pub fn commit_match(ctx: Context<SettleMatch>) -> Result<()> {
+        ctx.accounts.game.require_commit_ready()?;
         MagicIntentBundleBuilder::new(
             ctx.accounts.authority.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
@@ -102,6 +93,7 @@ pub mod meme_wars {
 
     /// Return ownership to this program and settle final state. Call on the ER.
     pub fn undelegate_match(ctx: Context<SettleMatch>) -> Result<()> {
+        ctx.accounts.game.require_undelegate_ready()?;
         MagicIntentBundleBuilder::new(
             ctx.accounts.authority.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
@@ -148,6 +140,13 @@ pub struct AuthorityMatch<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct CloseMatch<'info> {
+    #[account(mut, seeds = [b"match", game.authority.as_ref(), &game.match_id.to_le_bytes()], bump = game.bump)]
+    pub game: Account<'info, Match>,
+    pub caller: Signer<'info>,
+}
+
 #[commit]
 #[derive(Accounts)]
 pub struct SettleMatch<'info> {
@@ -178,6 +177,109 @@ pub struct Match {
 impl Match {
     pub const LEN: usize =
         32 + 32 + 8 + 1 + 1 + 8 + 8 + 8 + 16 + 16 + 16 + PlayerSlot::LEN * MAX_PLAYERS + 1 + 1;
+
+    fn active_players(&self) -> Result<&[PlayerSlot]> {
+        self.players
+            .get(..usize::from(self.player_count))
+            .ok_or_else(|| error!(GameError::InvalidStatus))
+    }
+
+    fn require_registration_open(&self, now: i64) -> Result<()> {
+        match self.status {
+            status if status == MatchStatus::Scheduled as u8 => Ok(()),
+            status if status == MatchStatus::Live as u8 && now < self.ends_at => Ok(()),
+            _ => err!(GameError::Closed),
+        }
+    }
+
+    pub fn join(&mut self, wallet: Pubkey, now: i64) -> Result<()> {
+        self.require_registration_open(now)?;
+        require!(
+            !self
+                .active_players()?
+                .iter()
+                .any(|entry| entry.wallet == wallet),
+            GameError::AlreadyJoined
+        );
+        let index = usize::from(self.player_count);
+        require!(index < MAX_PLAYERS, GameError::Full);
+        self.players[index] = PlayerSlot {
+            wallet,
+            credits: STARTING_CREDITS,
+            ..PlayerSlot::default()
+        };
+        self.player_count = self
+            .player_count
+            .checked_add(1)
+            .ok_or(GameError::Overflow)?;
+        Ok(())
+    }
+
+    pub fn choose_team(&mut self, wallet: Pubkey, team: u8, now: i64) -> Result<()> {
+        self.require_registration_open(now)?;
+        require!(
+            team == Team::Frog as u8 || team == Team::Cat as u8,
+            GameError::InvalidTeam
+        );
+        let index = self
+            .active_players()?
+            .iter()
+            .position(|entry| entry.wallet == wallet)
+            .ok_or(GameError::NotRegistered)?;
+        require!(self.players[index].team == 0, GameError::TeamAlreadyChosen);
+        let count = self
+            .active_players()?
+            .iter()
+            .filter(|entry| entry.team == team)
+            .count();
+        require!(count < MAX_TEAM_PLAYERS, GameError::TeamFull);
+        self.players[index].team = team;
+        Ok(())
+    }
+
+    pub fn start(&mut self, now: i64) -> Result<()> {
+        require!(
+            self.status == MatchStatus::Scheduled as u8,
+            GameError::InvalidStatus
+        );
+        let players = self.active_players()?;
+        require!(
+            players.iter().any(|entry| entry.team == Team::Frog as u8)
+                && players.iter().any(|entry| entry.team == Team::Cat as u8),
+            GameError::TeamsMissing
+        );
+        let ends_at = now.checked_add(ROUND_SECONDS).ok_or(GameError::Overflow)?;
+        self.started_at = now;
+        self.ends_at = ends_at;
+        self.status = MatchStatus::Live as u8;
+        Ok(())
+    }
+
+    pub fn close_round(&mut self, now: i64) -> Result<()> {
+        require!(
+            self.status == MatchStatus::Live as u8,
+            GameError::InvalidStatus
+        );
+        require!(now >= self.ends_at, GameError::TooEarly);
+        self.status = MatchStatus::Finalizing as u8;
+        Ok(())
+    }
+
+    pub fn require_commit_ready(&self) -> Result<()> {
+        require!(
+            self.status == MatchStatus::Live as u8 || self.status == MatchStatus::Finalizing as u8,
+            GameError::InvalidStatus
+        );
+        Ok(())
+    }
+
+    pub fn require_undelegate_ready(&self) -> Result<()> {
+        require!(
+            self.status == MatchStatus::Finalizing as u8,
+            GameError::InvalidStatus
+        );
+        Ok(())
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default)]
@@ -204,6 +306,12 @@ pub enum MatchStatus {
 }
 
 #[repr(u8)]
+pub enum Team {
+    Frog = 1,
+    Cat = 2,
+}
+
+#[repr(u8)]
 pub enum MatchOutcome {
     Pending = 0,
     Frog = 1,
@@ -225,11 +333,42 @@ pub enum GameError {
     Overflow,
     #[msg("The verifier public key is invalid")]
     InvalidVerifier,
+    #[msg("The player has not joined this match")]
+    NotRegistered,
+    #[msg("Choose Frog or Cat")]
+    InvalidTeam,
+    #[msg("The player already chose a team")]
+    TeamAlreadyChosen,
+    #[msg("This team's roster is full")]
+    TeamFull,
+    #[msg("Both teams need a player before the match starts")]
+    TeamsMissing,
+    #[msg("The match deadline has not arrived")]
+    TooEarly,
 }
 
 #[cfg(test)]
 mod baseline_tests {
     use super::*;
+
+    fn empty_match() -> Match {
+        Match {
+            authority: Pubkey::new_unique(),
+            verifier: Pubkey::new_unique(),
+            match_id: 7,
+            status: MatchStatus::Scheduled as u8,
+            outcome: MatchOutcome::Pending as u8,
+            started_at: 0,
+            ends_at: 0,
+            finalized_at: 0,
+            credit_reserves: [INITIAL_CREDIT_RESERVE; 2],
+            share_reserves: [INITIAL_SHARE_RESERVE; 2],
+            team_scores: [0; 2],
+            players: [PlayerSlot::default(); MAX_PLAYERS],
+            player_count: 0,
+            bump: 254,
+        }
+    }
 
     #[test]
     fn match_account_fits_declared_allocation_and_round_trips() {
@@ -272,5 +411,97 @@ mod baseline_tests {
         assert_eq!(decoded.share_reserves, [INITIAL_SHARE_RESERVE; 2]);
         assert_eq!(decoded.player_count, MAX_PLAYERS as u8);
         assert_eq!(decoded.players[9].team, 2);
+    }
+
+    #[test]
+    fn a_wallet_receives_credits_once_and_capacity_is_ten() {
+        let mut game = empty_match();
+        let first = Pubkey::new_unique();
+        game.join(first, 10).unwrap();
+        assert_eq!(game.players[0].credits, STARTING_CREDITS);
+        assert!(game.join(first, 10).is_err());
+        assert_eq!(game.player_count, 1);
+        assert_eq!(game.players[0].credits, STARTING_CREDITS);
+
+        for _ in 1..MAX_PLAYERS {
+            game.join(Pubkey::new_unique(), 10).unwrap();
+        }
+        assert_eq!(game.player_count, MAX_PLAYERS as u8);
+        assert!(game.join(Pubkey::new_unique(), 10).is_err());
+        assert_eq!(game.player_count, MAX_PLAYERS as u8);
+    }
+
+    #[test]
+    fn team_choice_is_registered_permanent_and_capped_at_five() {
+        let mut game = empty_match();
+        let outsider = Pubkey::new_unique();
+        assert!(game.choose_team(outsider, Team::Frog as u8, 10).is_err());
+        assert!(game.choose_team(outsider, 0, 10).is_err());
+
+        let wallets: Vec<_> = (0..6).map(|_| Pubkey::new_unique()).collect();
+        for wallet in &wallets {
+            game.join(*wallet, 10).unwrap();
+        }
+        assert!(game.choose_team(wallets[0], 3, 10).is_err());
+        for wallet in &wallets[..5] {
+            game.choose_team(*wallet, Team::Frog as u8, 10).unwrap();
+        }
+        assert!(game.choose_team(wallets[0], Team::Cat as u8, 10).is_err());
+        assert!(game.choose_team(wallets[5], Team::Frog as u8, 10).is_err());
+        assert_eq!(game.players[5].team, 0);
+        game.choose_team(wallets[5], Team::Cat as u8, 10).unwrap();
+        assert_eq!(game.players[5].team, Team::Cat as u8);
+    }
+
+    #[test]
+    fn round_starts_with_both_teams_and_closes_at_exact_deadline() {
+        let mut game = empty_match();
+        let frog = Pubkey::new_unique();
+        let cat = Pubkey::new_unique();
+        assert!(game.start(100).is_err());
+        game.join(frog, 100).unwrap();
+        game.choose_team(frog, Team::Frog as u8, 100).unwrap();
+        assert!(game.start(100).is_err());
+        game.join(cat, 100).unwrap();
+        game.choose_team(cat, Team::Cat as u8, 100).unwrap();
+        game.start(100).unwrap();
+        assert_eq!(game.started_at, 100);
+        assert_eq!(game.ends_at, 190);
+        assert!(game.start(101).is_err());
+        assert!(game.close_round(189).is_err());
+
+        let late_wallet = Pubkey::new_unique();
+        game.join(late_wallet, 189).unwrap();
+        assert!(game
+            .choose_team(late_wallet, Team::Frog as u8, 190)
+            .is_err());
+        assert!(game.join(Pubkey::new_unique(), 190).is_err());
+        game.close_round(190).unwrap();
+        assert_eq!(game.status, MatchStatus::Finalizing as u8);
+        assert_eq!(game.outcome, MatchOutcome::Pending as u8);
+        assert_eq!(game.finalized_at, 0);
+        assert!(game.close_round(191).is_err());
+        assert!(game.join(Pubkey::new_unique(), 191).is_err());
+    }
+
+    #[test]
+    fn settlement_requires_the_right_lifecycle_stage() {
+        let mut game = empty_match();
+        assert!(game.require_commit_ready().is_err());
+        assert!(game.require_undelegate_ready().is_err());
+        let frog = Pubkey::new_unique();
+        let cat = Pubkey::new_unique();
+        game.join(frog, 0).unwrap();
+        game.join(cat, 0).unwrap();
+        game.choose_team(frog, Team::Frog as u8, 0).unwrap();
+        game.choose_team(cat, Team::Cat as u8, 0).unwrap();
+        assert!(game.start(i64::MAX - ROUND_SECONDS + 1).is_err());
+        assert_eq!(game.status, MatchStatus::Scheduled as u8);
+        game.start(0).unwrap();
+        game.require_commit_ready().unwrap();
+        assert!(game.require_undelegate_ready().is_err());
+        game.close_round(90).unwrap();
+        game.require_commit_ready().unwrap();
+        game.require_undelegate_ready().unwrap();
     }
 }
