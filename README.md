@@ -20,11 +20,14 @@ updates, and later committed and undelegated to Solana.
   have at least one player. The program clock sets the deadline.
 - `close_match`: any signer can move an expired round to `Finalizing`. Joins and
   team choices are rejected at the deadline or after close.
+- `buy_shares` and `sell_shares`: trade Frog or Cat virtual shares on the ER
+  during the live round. A registered wallet signs each trade, supplies minimum
+  output and its current trade nonce, and receives reserve-backed execution.
 - `commit_match` and `undelegate_match`: schedule the MagicBlock settlement intent
   from the ER. Commit is allowed while live or finalizing; undelegation requires
   finalizing. Confirm base-layer completion separately.
 
-Trading, signed score verification, and winner calculation are future phases.
+Signed score verification and winner calculation are future phases.
 `Finalizing` still has a pending outcome; this is not yet a playable game.
 
 ## Frontend
@@ -92,8 +95,17 @@ is the integration reference. Keep base, router, and ER connections distinct.
 | --- | --- | --- | --- |
 | Match PDA (`match`, authority, little-endian match ID) | Base Solana | Program on ER after delegation | Commit and undelegate to base |
 
-The match is 756 bytes including the Anchor discriminator, below MagicBlock's
+The match is 836 bytes including the Anchor discriminator, below MagicBlock's
 10,240-byte commit limit. The authority funds creation and delegation. The
 prototype uses one match at a time; later client code must verify router
 placement and wait for delegation and settlement propagation before changing
 transaction routing.
+
+The Phase 4 layout adds a `u64` trade nonce to every player slot. Use a fresh
+local ledger when testing this prototype; accounts created with the earlier
+756-byte layout cannot be decoded by the revised program. Trades spend whole
+virtual credits and hold shares in microshares. Buys accept 1–250 credits;
+sells accept 1–100 shares (fractional microshares within that range). Pool
+rounding preserves the constant-product invariant and may leave dust that
+cannot be sold for a whole credit. Prices and portfolio values are indicative
+virtual credits only. Trading never changes the battle score or winner.

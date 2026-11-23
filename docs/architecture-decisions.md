@@ -44,6 +44,14 @@ Initialize and delegate transactions go to base. Join, team choice, start, close
 
 Registration is open while `Scheduled`, and while `Live` only before `ends_at`. Each wallet can join once and receives exactly 1,000 virtual credits in a fixed player slot. Team selection requires a registered wallet, accepts only Frog or Cat, is immutable once chosen, and caps each roster at five. The authority alone may start a scheduled match, after both teams have at least one member. Anyone may close a live match at its trusted program deadline. A checkpoint commit is allowed in `Live` or `Finalizing`; undelegation requires `Finalizing`. Closing does not calculate an outcome: `outcome` remains `Pending` until the future score finalization phase. The account layout remains 756 bytes including its discriminator.
 
+## Phase 4 trade implementation
+
+The Phase 4 layout appends a `u64 trade_nonce` to each fixed player slot. Slots are now 68 bytes, `Match` payload is 828 bytes, and the allocated account is 836 bytes including its discriminator. Existing 756-byte prototype accounts are incompatible; test with a fresh ledger and do not migrate a live delegated account in place.
+
+`buy_shares(pool, credits_in, min_shares_out, expected_nonce)` and `sell_shares(pool, shares_in, min_credits_out, expected_nonce)` use pool `0` for Frog and `1` for Cat. A registered wallet signs and supplies its current nonce; only successful trades increment it. This stops replay even if the same instruction is resubmitted with a new transaction signature. Both instructions require `Live` and program time before `ends_at`. Team choice is unrelated to trading.
+
+Buys accept 1–250 whole credits and sells accept 1–100 shares in microshare units, allowing fractional shares above the one-share minimum. Minimum output must be positive. The onchain quote uses checked `u128` arithmetic, ceilings the new reserve and rejecting zero output. All new balances and nonce are checked before any state assignment. `requirement.md` now specifies the same ceiling rule for buys and sells: flooring the new reserve could lower `k` and leak value through rounding. Whole-credit settlement can leave unsellable share dust. Trades never update team scores or outcome; spot and portfolio values remain indicative virtual credits.
+
 ## Phase boundaries and validation
 
 Phase 2 changes the account layout, pure math, tests, and this document. It does not implement team selection, trades, scoring, finalization, a web interface, or a verifier service. Unit tests prove exact serialization, full-capacity round-trip, rounding, invariant, zero output, overflow, and no-free-credit round trips. The rebuilt program must repeat the Phase 1 real ER mutation and independent base read on a fresh local stack. The local Agave 4.3.2 stack still needs the documented sBPFv3 deployment feature override for the current legacy Anchor build.

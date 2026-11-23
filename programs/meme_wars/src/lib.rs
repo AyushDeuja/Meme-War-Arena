@@ -13,6 +13,9 @@ pub const ROUND_SECONDS: i64 = 90;
 pub const STARTING_CREDITS: u64 = 1_000;
 pub const INITIAL_CREDIT_RESERVE: u64 = 10_000;
 pub const INITIAL_SHARE_RESERVE: u64 = 1_000 * math::SHARE_SCALE;
+pub const MAX_BUY_CREDITS: u64 = 250;
+pub const MIN_SELL_SHARES: u64 = math::SHARE_SCALE;
+pub const MAX_SELL_SHARES: u64 = 100 * math::SHARE_SCALE;
 
 #[ephemeral]
 #[program]
@@ -64,6 +67,42 @@ pub mod meme_wars {
         ctx.accounts.game.choose_team(
             ctx.accounts.player.key(),
             team,
+            Clock::get()?.unix_timestamp,
+        )
+    }
+
+    /// Exchange virtual credits for shares in one of the two independent pools.
+    pub fn buy_shares(
+        ctx: Context<MutateMatch>,
+        pool: u8,
+        credits_in: u64,
+        min_shares_out: u64,
+        expected_nonce: u64,
+    ) -> Result<()> {
+        ctx.accounts.game.buy_shares(
+            ctx.accounts.player.key(),
+            pool,
+            credits_in,
+            min_shares_out,
+            expected_nonce,
+            Clock::get()?.unix_timestamp,
+        )
+    }
+
+    /// Exchange owned virtual shares for credits in the selected pool.
+    pub fn sell_shares(
+        ctx: Context<MutateMatch>,
+        pool: u8,
+        shares_in: u64,
+        min_credits_out: u64,
+        expected_nonce: u64,
+    ) -> Result<()> {
+        ctx.accounts.game.sell_shares(
+            ctx.accounts.player.key(),
+            pool,
+            shares_in,
+            min_credits_out,
+            expected_nonce,
             Clock::get()?.unix_timestamp,
         )
     }
@@ -192,6 +231,133 @@ impl Match {
         }
     }
 
+    fn require_trade_open(&self, now: i64) -> Result<()> {
+        require!(
+            self.status == MatchStatus::Live as u8 && now < self.ends_at,
+            GameError::Closed
+        );
+        Ok(())
+    }
+
+    fn player_index(&self, wallet: Pubkey) -> Result<usize> {
+        self.active_players()?
+            .iter()
+            .position(|entry| entry.wallet == wallet)
+            .ok_or_else(|| error!(GameError::NotRegistered))
+    }
+
+    fn pool_index(pool: u8) -> Result<usize> {
+        require!(pool < 2, GameError::InvalidPool);
+        Ok(usize::from(pool))
+    }
+
+    pub fn buy_shares(
+        &mut self,
+        wallet: Pubkey,
+        pool: u8,
+        credits_in: u64,
+        min_shares_out: u64,
+        expected_nonce: u64,
+        now: i64,
+    ) -> Result<()> {
+        self.require_trade_open(now)?;
+        let pool_index = Self::pool_index(pool)?;
+        require!(
+            (1..=MAX_BUY_CREDITS).contains(&credits_in) && min_shares_out > 0,
+            GameError::InvalidTradeAmount
+        );
+        let player_index = self.player_index(wallet)?;
+        let player = &self.players[player_index];
+        require!(
+            player.trade_nonce == expected_nonce,
+            GameError::InvalidNonce
+        );
+        require!(player.credits >= credits_in, GameError::InsufficientCredits);
+        let quote = math::quote_buy(
+            self.credit_reserves[pool_index],
+            self.share_reserves[pool_index],
+            credits_in,
+        )
+        .map_err(trade_math_error)?;
+        require!(
+            quote.shares_out >= min_shares_out,
+            GameError::SlippageExceeded
+        );
+        let credits = player
+            .credits
+            .checked_sub(credits_in)
+            .ok_or(GameError::Overflow)?;
+        let shares = player_shares(player, pool_index)
+            .checked_add(quote.shares_out)
+            .ok_or(GameError::Overflow)?;
+        let nonce = player
+            .trade_nonce
+            .checked_add(1)
+            .ok_or(GameError::Overflow)?;
+        self.credit_reserves[pool_index] = quote.new_credit_reserve;
+        self.share_reserves[pool_index] = quote.new_share_reserve;
+        let player = &mut self.players[player_index];
+        player.credits = credits;
+        *player_shares_mut(player, pool_index) = shares;
+        player.trade_nonce = nonce;
+        Ok(())
+    }
+
+    pub fn sell_shares(
+        &mut self,
+        wallet: Pubkey,
+        pool: u8,
+        shares_in: u64,
+        min_credits_out: u64,
+        expected_nonce: u64,
+        now: i64,
+    ) -> Result<()> {
+        self.require_trade_open(now)?;
+        let pool_index = Self::pool_index(pool)?;
+        require!(
+            (MIN_SELL_SHARES..=MAX_SELL_SHARES).contains(&shares_in) && min_credits_out > 0,
+            GameError::InvalidTradeAmount
+        );
+        let player_index = self.player_index(wallet)?;
+        let player = &self.players[player_index];
+        require!(
+            player.trade_nonce == expected_nonce,
+            GameError::InvalidNonce
+        );
+        require!(
+            player_shares(player, pool_index) >= shares_in,
+            GameError::InsufficientShares
+        );
+        let quote = math::quote_sell(
+            self.credit_reserves[pool_index],
+            self.share_reserves[pool_index],
+            shares_in,
+        )
+        .map_err(trade_math_error)?;
+        require!(
+            quote.credits_out >= min_credits_out,
+            GameError::SlippageExceeded
+        );
+        let credits = player
+            .credits
+            .checked_add(quote.credits_out)
+            .ok_or(GameError::Overflow)?;
+        let shares = player_shares(player, pool_index)
+            .checked_sub(shares_in)
+            .ok_or(GameError::Overflow)?;
+        let nonce = player
+            .trade_nonce
+            .checked_add(1)
+            .ok_or(GameError::Overflow)?;
+        self.credit_reserves[pool_index] = quote.new_credit_reserve;
+        self.share_reserves[pool_index] = quote.new_share_reserve;
+        let player = &mut self.players[player_index];
+        player.credits = credits;
+        *player_shares_mut(player, pool_index) = shares;
+        player.trade_nonce = nonce;
+        Ok(())
+    }
+
     pub fn join(&mut self, wallet: Pubkey, now: i64) -> Result<()> {
         self.require_registration_open(now)?;
         require!(
@@ -291,10 +457,36 @@ pub struct PlayerSlot {
     pub team: u8,
     pub best_score: u16,
     pub attempts_used: u8,
+    pub trade_nonce: u64,
 }
 
 impl PlayerSlot {
-    pub const LEN: usize = 32 + 8 + 8 + 8 + 1 + 2 + 1;
+    pub const LEN: usize = 32 + 8 + 8 + 8 + 1 + 2 + 1 + 8;
+}
+
+fn player_shares(player: &PlayerSlot, pool_index: usize) -> u64 {
+    if pool_index == 0 {
+        player.frog_shares
+    } else {
+        player.cat_shares
+    }
+}
+
+fn player_shares_mut(player: &mut PlayerSlot, pool_index: usize) -> &mut u64 {
+    if pool_index == 0 {
+        &mut player.frog_shares
+    } else {
+        &mut player.cat_shares
+    }
+}
+
+fn trade_math_error(error: math::MathError) -> Error {
+    match error {
+        math::MathError::InvalidAmount => error!(GameError::InvalidTradeAmount),
+        math::MathError::EmptyReserve => error!(GameError::EmptyReserve),
+        math::MathError::ZeroOutput => error!(GameError::ZeroOutput),
+        math::MathError::Overflow => error!(GameError::Overflow),
+    }
 }
 
 #[repr(u8)]
@@ -345,6 +537,22 @@ pub enum GameError {
     TeamsMissing,
     #[msg("The match deadline has not arrived")]
     TooEarly,
+    #[msg("Choose Frog or Cat pool")]
+    InvalidPool,
+    #[msg("Trade input or minimum output is outside its allowed range")]
+    InvalidTradeAmount,
+    #[msg("This wallet has insufficient virtual credits")]
+    InsufficientCredits,
+    #[msg("This wallet has insufficient virtual shares")]
+    InsufficientShares,
+    #[msg("The trade output is below the requested minimum")]
+    SlippageExceeded,
+    #[msg("The trade nonce does not match")]
+    InvalidNonce,
+    #[msg("A virtual pool reserve is empty")]
+    EmptyReserve,
+    #[msg("The trade would produce zero output")]
+    ZeroOutput,
 }
 
 #[cfg(test)]
@@ -368,6 +576,49 @@ mod baseline_tests {
             player_count: 0,
             bump: 254,
         }
+    }
+
+    fn live_match() -> (Match, Pubkey, Pubkey) {
+        let mut game = empty_match();
+        let frog = Pubkey::new_unique();
+        let cat = Pubkey::new_unique();
+        game.join(frog, 0).unwrap();
+        game.join(cat, 0).unwrap();
+        game.choose_team(frog, Team::Frog as u8, 0).unwrap();
+        game.choose_team(cat, Team::Cat as u8, 0).unwrap();
+        game.start(0).unwrap();
+        (game, frog, cat)
+    }
+
+    fn conserved(game: &Match) -> bool {
+        let credits: u128 = game
+            .credit_reserves
+            .iter()
+            .map(|&value| u128::from(value))
+            .sum::<u128>()
+            + game
+                .active_players()
+                .unwrap()
+                .iter()
+                .map(|player| u128::from(player.credits))
+                .sum::<u128>();
+        let frog_shares: u128 = u128::from(game.share_reserves[0])
+            + game
+                .active_players()
+                .unwrap()
+                .iter()
+                .map(|player| u128::from(player.frog_shares))
+                .sum::<u128>();
+        let cat_shares: u128 = u128::from(game.share_reserves[1])
+            + game
+                .active_players()
+                .unwrap()
+                .iter()
+                .map(|player| u128::from(player.cat_shares))
+                .sum::<u128>();
+        credits == 22_000
+            && frog_shares == u128::from(INITIAL_SHARE_RESERVE)
+            && cat_shares == u128::from(INITIAL_SHARE_RESERVE)
     }
 
     #[test]
@@ -399,7 +650,7 @@ mod baseline_tests {
 
         let mut encoded = Vec::new();
         game.try_serialize(&mut encoded).unwrap();
-        assert_eq!(Match::LEN, 748);
+        assert_eq!(Match::LEN, 828);
         assert_eq!(encoded.len(), 8 + Match::LEN);
         assert!(encoded.len() <= 10_240);
 
@@ -411,6 +662,7 @@ mod baseline_tests {
         assert_eq!(decoded.share_reserves, [INITIAL_SHARE_RESERVE; 2]);
         assert_eq!(decoded.player_count, MAX_PLAYERS as u8);
         assert_eq!(decoded.players[9].team, 2);
+        assert_eq!(decoded.players[9].trade_nonce, 0);
     }
 
     #[test]
@@ -503,5 +755,109 @@ mod baseline_tests {
         game.close_round(90).unwrap();
         game.require_commit_ready().unwrap();
         game.require_undelegate_ready().unwrap();
+    }
+
+    #[test]
+    fn buys_and_sells_change_only_the_selected_pool_and_preserve_supply() {
+        let (mut game, frog, cat) = live_match();
+        let frog_before = (game.credit_reserves[0], game.share_reserves[0]);
+        game.buy_shares(frog, 0, 100, 1, 0, 1).unwrap();
+        assert!(game.credit_reserves[0] > frog_before.0);
+        assert!(game.share_reserves[0] < frog_before.1);
+        assert_eq!(game.credit_reserves[1], INITIAL_CREDIT_RESERVE);
+        assert_eq!(game.share_reserves[1], INITIAL_SHARE_RESERVE);
+        assert!(conserved(&game));
+        game.buy_shares(cat, 1, 100, 1, 0, 1).unwrap();
+        let cat_before = (game.credit_reserves[1], game.share_reserves[1]);
+        game.sell_shares(cat, 1, MIN_SELL_SHARES, 1, 1, 2).unwrap();
+        assert!(game.credit_reserves[1] < cat_before.0);
+        assert!(game.share_reserves[1] > cat_before.1);
+        assert!(conserved(&game));
+        assert_eq!(game.team_scores, [0; 2]);
+        assert_eq!(game.outcome, MatchOutcome::Pending as u8);
+    }
+
+    #[test]
+    fn failed_trades_leave_balances_and_nonce_unchanged() {
+        let (mut game, frog, cat) = live_match();
+        assert!(game.buy_shares(frog, 0, 100, 1, 0, 0).is_ok());
+        let original = (
+            game.credit_reserves,
+            game.share_reserves,
+            game.players[0].credits,
+            game.players[0].frog_shares,
+            game.players[0].trade_nonce,
+        );
+        for result in [
+            game.buy_shares(frog, 0, 100, 1, 0, 1),
+            game.buy_shares(frog, 2, 100, 1, 1, 1),
+            game.buy_shares(frog, 0, 0, 1, 1, 1),
+            game.buy_shares(frog, 0, 251, 1, 1, 1),
+            game.buy_shares(frog, 0, 100, u64::MAX, 1, 1),
+            game.sell_shares(frog, 0, 1, 1, 1, 1),
+            game.sell_shares(frog, 0, MAX_SELL_SHARES + 1, 1, 1, 1),
+            game.sell_shares(frog, 0, MAX_SELL_SHARES, 1, 1, 1),
+            game.sell_shares(cat, 0, MIN_SELL_SHARES, 1, 0, 1),
+            game.buy_shares(Pubkey::new_unique(), 0, 1, 1, 0, 1),
+            game.buy_shares(frog, 0, 100, 1, 1, 90),
+        ] {
+            assert!(result.is_err());
+        }
+        assert_eq!(
+            (
+                game.credit_reserves,
+                game.share_reserves,
+                game.players[0].credits,
+                game.players[0].frog_shares,
+                game.players[0].trade_nonce
+            ),
+            original
+        );
+        game.players[0].credits = 0;
+        assert!(game.buy_shares(frog, 0, 1, 1, 1, 1).is_err());
+        game.players[0].credits = original.2;
+        game.players[0].frog_shares = u64::MAX;
+        assert!(game.buy_shares(frog, 0, 1, 1, 1, 1).is_err());
+        game.players[0].frog_shares = original.3;
+        game.players[0].trade_nonce = u64::MAX;
+        assert!(game.buy_shares(frog, 0, 1, 1, u64::MAX, 1).is_err());
+        game.players[0].trade_nonce = original.4;
+        assert_eq!(game.credit_reserves, original.0);
+        assert_eq!(game.share_reserves, original.1);
+        game.close_round(90).unwrap();
+        assert!(game
+            .sell_shares(frog, 0, MIN_SELL_SHARES, 1, 1, 91)
+            .is_err());
+    }
+
+    #[test]
+    fn deterministic_trades_conserve_supply_and_round_trip_cannot_mint_credits() {
+        let (mut game, frog, _) = live_match();
+        let mut seed = 0x1234_5678_u64;
+        for _ in 0..80 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let amount = 1 + (seed % 150);
+            let pool = (seed >> 17) as u8 % 2;
+            let index = usize::from(pool);
+            let before_k =
+                u128::from(game.credit_reserves[index]) * u128::from(game.share_reserves[index]);
+            let before_credits = game.players[0].credits;
+            let before_shares = player_shares(&game.players[0], index);
+            let nonce = game.players[0].trade_nonce;
+            if amount > before_credits || game.buy_shares(frog, pool, amount, 1, nonce, 1).is_err()
+            {
+                continue;
+            }
+            let gained = player_shares(&game.players[0], index) - before_shares;
+            if gained >= MIN_SELL_SHARES && gained <= MAX_SELL_SHARES {
+                let nonce = game.players[0].trade_nonce;
+                game.sell_shares(frog, pool, gained, 1, nonce, 1).unwrap();
+                assert!(game.players[0].credits <= before_credits);
+            }
+            let after_k =
+                u128::from(game.credit_reserves[index]) * u128::from(game.share_reserves[index]);
+            assert!(after_k >= before_k);
+            assert!(conserved(&game));
+        }
     }
 }

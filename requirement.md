@@ -37,7 +37,7 @@ Deliver a short, playable multiplayer entertainment-finance game in which a meme
 ## 4. Deterministic market specification
 For each meme maintain `credit_reserve`, `share_reserve`, both strictly positive integer fixed-point amounts. Initial example: 10,000 credits and 1,000 shares (units may use fixed precision). `k = x*y`; quoted spot price `x/y`.
 
-**Buy credits-in `c`:** `new_x=x+c`; `new_y=floor(k/new_x)` (or another documented consistent integer rounding mode); `shares_out=y-new_y`; reject if `shares_out < min_shares_out`, `shares_out=0`, or pool underflows.
+**Buy credits-in `c`:** `new_x=x+c`; `new_y=ceil(k/new_x)`; `shares_out=y-new_y`; reject if `shares_out < min_shares_out`, `shares_out=0`, or pool underflows. Rounding the remaining share reserve up preserves `new_x*new_y >= k`; flooring it could lower the invariant and leak value through repeated trades.
 
 **Sell shares-in `q`:** `new_y=y+q`; `new_x=ceil(k/new_y)` when protecting the invariant; `credits_out=x-new_x`; reject if insufficient position or `credits_out < min_credits_out`.
 

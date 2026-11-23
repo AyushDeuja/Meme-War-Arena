@@ -21,7 +21,32 @@ const expectedMessages = {
   InvalidStatus: "The match is in the wrong state",
   TooEarly: "The match deadline has not arrived",
   Closed: "The match is closed",
+  InvalidPool: "Choose Frog or Cat pool",
+  InvalidTradeAmount: "Trade input or minimum output is outside its allowed range",
+  InsufficientCredits: "This wallet has insufficient virtual credits",
+  InsufficientShares: "This wallet has insufficient virtual shares",
+  SlippageExceeded: "The trade output is below the requested minimum",
+  InvalidNonce: "The trade nonce does not match",
 };
+
+function buyOutput(credits, shares, input) {
+  const k = credits * shares;
+  const newCredits = credits + input;
+  const newShares = (k + newCredits - 1n) / newCredits;
+  return shares - newShares;
+}
+
+function snapshot(state) {
+  return {
+    creditReserves: state.creditReserves.map(String),
+    shareReserves: state.shareReserves.map(String),
+    players: state.players.slice(0, state.playerCount).map((player) => ({
+      wallet: player.wallet.toBase58(), credits: String(player.credits),
+      frogShares: String(player.frogShares), catShares: String(player.catShares),
+      tradeNonce: String(player.tradeNonce),
+    })),
+  };
+}
 
 async function poll(label, operation, timeoutMs = 45_000) {
   const deadline = Date.now() + timeoutMs;
@@ -89,7 +114,7 @@ async function main() {
   console.log(`Base initialize: ${initSignature}`);
   const initial = await baseProgram.account.match.fetch(game);
   const initialAccount = await base.getAccountInfo(game);
-  assert.equal(initialAccount.data.length, 756);
+  assert.equal(initialAccount.data.length, 836);
   assert.equal(initial.playerCount, 0);
   assert.equal(initial.matchId.toString(), matchId.toString());
   assert.equal(initial.verifier.toBase58(), verifier.toBase58());
@@ -179,6 +204,58 @@ async function main() {
   await expectRejected("premature undelegation", () => erProgram.methods
     .undelegateMatch().accountsPartial({ game, authority: wallet.publicKey }).rpc(), "InvalidStatus");
 
+  const outsiderTrader = web3.Keypair.generate();
+  await expectRejected("unregistered trade", () => erProgram.methods
+    .buyShares(0, new BN(1), new BN(1), new BN(0))
+    .accountsPartial({ game, player: outsiderTrader.publicKey }).signers([outsiderTrader]).rpc(), "NotRegistered");
+  await expectRejected("invalid pool", () => erProgram.methods
+    .buyShares(2, new BN(100), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "InvalidPool");
+  await expectRejected("zero buy", () => erProgram.methods
+    .buyShares(0, new BN(0), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "InvalidTradeAmount");
+  await expectRejected("buy over cap", () => erProgram.methods
+    .buyShares(0, new BN(251), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "InvalidTradeAmount");
+  await expectRejected("sell unowned shares", () => erProgram.methods
+    .sellShares(0, new BN(1_000_000), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "InsufficientShares");
+  const frogBuySignature = await erProgram.methods
+    .buyShares(0, new BN(100), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc();
+  console.log(`ER Frog buy: ${frogBuySignature}`);
+  const afterFrogBuy = await erProgram.account.match.fetch(game);
+  assert.equal(afterFrogBuy.players[0].credits.toString(), "900");
+  assert.equal(afterFrogBuy.players[0].tradeNonce.toString(), "1");
+  assert.equal(afterFrogBuy.creditReserves[1].toString(), "10000");
+  await expectRejected("replayed buy nonce", () => erProgram.methods
+    .buyShares(0, new BN(100), new BN(1), new BN(0))
+    .accountsPartial({ game, player: wallet.publicKey })
+    .preInstructions([web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 180_003 })])
+    .rpc(), "InvalidNonce");
+  const staleCatOutput = buyOutput(10_000n, 1_000_000_000n, 100n);
+  const catBuySignature = await erProgram.methods
+    .buyShares(1, new BN(100), new BN(staleCatOutput.toString()), new BN(0))
+    .accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc();
+  console.log(`ER Cat buy: ${catBuySignature}`);
+  await expectRejected("stale Cat slippage quote", () => erProgram.methods
+    .buyShares(1, new BN(100), new BN(staleCatOutput.toString()), new BN(1))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "SlippageExceeded");
+  assert.equal((await erProgram.account.match.fetch(game)).players[0].tradeNonce.toString(), "1");
+  const frogSellSignature = await erProgram.methods
+    .sellShares(0, new BN(1_000_000), new BN(1), new BN(1))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc();
+  console.log(`ER Frog sell: ${frogSellSignature}`);
+  const catSellSignature = await erProgram.methods
+    .sellShares(1, new BN(1_000_000), new BN(1), new BN(1))
+    .accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc();
+  console.log(`ER Cat sell: ${catSellSignature}`);
+  const tradedState = await erProgram.account.match.fetch(game);
+  assert.equal(tradedState.players[0].tradeNonce.toString(), "2");
+  assert.equal(tradedState.players[1].tradeNonce.toString(), "2");
+  assert.ok(tradedState.players[0].credits.toNumber() <= 1_000);
+  assert.ok(tradedState.players[1].credits.toNumber() <= 1_000);
+
   const livePlayer = web3.Keypair.generate();
   await erProgram.methods.joinMatch()
     .accountsPartial({ game, player: livePlayer.publicKey }).signers([livePlayer]).rpc();
@@ -187,6 +264,7 @@ async function main() {
   const liveState = await erProgram.account.match.fetch(game);
   assert.equal(liveState.playerCount, 8);
   assert.equal(liveState.players[7].credits.toString(), "1000");
+  const tradedSnapshot = snapshot(liveState);
 
   let closeSignature;
   const closeDeadline = Date.now() + 135_000;
@@ -216,6 +294,9 @@ async function main() {
     .signers([latePlayer]).rpc(), "Closed");
   await expectRejected("team choice after close", () => erProgram.methods
     .chooseTeam(1).accountsPartial({ game, player: cat.publicKey }).signers([cat]).rpc(), "Closed");
+  await expectRejected("trade after close", () => erProgram.methods
+    .buyShares(0, new BN(1), new BN(1), new BN(2))
+    .accountsPartial({ game, player: wallet.publicKey }).rpc(), "Closed");
   const closedState = await erProgram.account.match.fetch(game);
   assert.equal(closedState.status, 2);
   assert.equal(closedState.outcome, 0);
@@ -231,7 +312,7 @@ async function main() {
   await poll("committed state on base", async () => {
     const state = await baseProgram.account.match.fetch(game);
     return state.playerCount === 8 && state.status === 2
-      && state.players.every((player, index) => index >= 8 || player.credits.toString() === "1000") && state;
+      && JSON.stringify(snapshot(state)) === JSON.stringify(tradedSnapshot) && state;
   });
 
   const undelegateSignature = await erProgram.methods
@@ -246,10 +327,10 @@ async function main() {
     if (!account?.owner.equals(programId)) return false;
     const state = await baseProgram.account.match.fetch(game);
     return state.playerCount === 8 && state.status === 2
-      && state.players.every((player, index) => index >= 8 || player.credits.toString() === "1000") && state;
+      && JSON.stringify(snapshot(state)) === JSON.stringify(tradedSnapshot) && state;
   });
 
-  console.log("PASS: 90-second ER lifecycle and final base-layer state match");
+  console.log("PASS: virtual trades, 90-second ER lifecycle, and final base-layer state match");
 }
 
 main().catch((error) => {

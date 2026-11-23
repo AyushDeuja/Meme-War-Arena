@@ -1,6 +1,6 @@
 //! Deterministic quotes for the two virtual, fee-free constant-product pools.
 //! Credits have zero decimal places; shares have six. This module performs no
-//! account mutation. Trade instructions and their limits arrive in Phase 4.
+//! account mutation. Phase 4 trade instructions apply these quotes to the ledger.
 
 pub const SHARE_SCALE: u64 = 1_000_000;
 pub const PRICE_MILLI_SCALE: u64 = 1_000;
