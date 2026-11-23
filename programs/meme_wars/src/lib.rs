@@ -139,9 +139,14 @@ pub mod meme_wars {
         ctx.accounts.game.start(Clock::get()?.unix_timestamp)
     }
 
-    /// Anyone may close an expired round; its outcome remains pending.
+    /// Anyone may close an expired round before finalization.
     pub fn close_match(ctx: Context<CloseMatch>) -> Result<()> {
         ctx.accounts.game.close_round(Clock::get()?.unix_timestamp)
+    }
+
+    /// Resolve the skill-score winner once; repeated calls preserve the result.
+    pub fn finalize_match(ctx: Context<CloseMatch>) -> Result<()> {
+        ctx.accounts.game.finalize(Clock::get()?.unix_timestamp)
     }
 
     /// Persist the current delegated state to Solana. Call on the ER.
@@ -519,9 +524,50 @@ impl Match {
         Ok(())
     }
 
+    pub fn finalize(&mut self, now: i64) -> Result<()> {
+        if self.status == MatchStatus::Finalized as u8 {
+            return Ok(());
+        }
+        require!(
+            self.status == MatchStatus::Finalizing as u8,
+            GameError::InvalidStatus
+        );
+        require!(now >= self.ends_at, GameError::TooEarly);
+        let mut scores = [0_u64; 2];
+        let mut perfects = [0_u64; 2];
+        for player in self.active_players()? {
+            if player.team == 0 {
+                continue;
+            }
+            require!(player.team <= 2, GameError::InvalidTeam);
+            let index = usize::from(player.team - 1);
+            scores[index] = scores[index]
+                .checked_add(u64::from(player.best_score))
+                .ok_or(GameError::Overflow)?;
+            perfects[index] = perfects[index]
+                .checked_add(u64::from(player.perfect_attempts))
+                .ok_or(GameError::Overflow)?;
+        }
+        require!(scores == self.team_scores, GameError::InconsistentScore);
+        self.outcome = match scores[0].cmp(&scores[1]) {
+            std::cmp::Ordering::Greater => MatchOutcome::Frog as u8,
+            std::cmp::Ordering::Less => MatchOutcome::Cat as u8,
+            std::cmp::Ordering::Equal => match perfects[0].cmp(&perfects[1]) {
+                std::cmp::Ordering::Greater => MatchOutcome::Frog as u8,
+                std::cmp::Ordering::Less => MatchOutcome::Cat as u8,
+                std::cmp::Ordering::Equal => MatchOutcome::Draw as u8,
+            },
+        };
+        self.finalized_at = now;
+        self.status = MatchStatus::Finalized as u8;
+        Ok(())
+    }
+
     pub fn require_commit_ready(&self) -> Result<()> {
         require!(
-            self.status == MatchStatus::Live as u8 || self.status == MatchStatus::Finalizing as u8,
+            self.status == MatchStatus::Live as u8
+                || self.status == MatchStatus::Finalizing as u8
+                || self.status == MatchStatus::Finalized as u8,
             GameError::InvalidStatus
         );
         Ok(())
@@ -529,7 +575,7 @@ impl Match {
 
     pub fn require_undelegate_ready(&self) -> Result<()> {
         require!(
-            self.status == MatchStatus::Finalizing as u8,
+            self.status == MatchStatus::Finalized as u8,
             GameError::InvalidStatus
         );
         Ok(())
@@ -657,6 +703,8 @@ pub enum GameError {
     AttemptLimit,
     #[msg("The attempt index is not next in sequence")]
     InvalidAttemptIndex,
+    #[msg("Stored team score does not match verified player scores")]
+    InconsistentScore,
 }
 
 #[cfg(test)]
@@ -858,6 +906,9 @@ mod baseline_tests {
         assert!(game.require_undelegate_ready().is_err());
         game.close_round(90).unwrap();
         game.require_commit_ready().unwrap();
+        assert!(game.require_undelegate_ready().is_err());
+        game.finalize(90).unwrap();
+        game.require_commit_ready().unwrap();
         game.require_undelegate_ready().unwrap();
     }
 
@@ -1042,5 +1093,64 @@ mod baseline_tests {
         assert!(game
             .apply_verified_attempt(frog, 1, 33, 30, 100, 91)
             .is_err());
+    }
+
+    #[test]
+    fn skill_winner_ignores_the_higher_amm_price() {
+        let (mut game, frog, cat) = live_match();
+        assert!(game.finalize(90).is_err());
+        game.buy_shares(cat, 1, 250, 1, 0, 10).unwrap();
+        assert!(
+            math::spot_price_milli_credits(game.credit_reserves[1], game.share_reserves[1])
+                .unwrap()
+                > math::spot_price_milli_credits(game.credit_reserves[0], game.share_reserves[0])
+                    .unwrap()
+        );
+        game.apply_verified_attempt(frog, 1, 11, 60, 80, 10)
+            .unwrap();
+        game.apply_verified_attempt(cat, 1, 21, 30, 80, 10).unwrap();
+        game.close_round(90).unwrap();
+        game.finalize(90).unwrap();
+        assert_eq!(game.status, MatchStatus::Finalized as u8);
+        assert_eq!(game.outcome, MatchOutcome::Frog as u8);
+        assert_eq!(game.finalized_at, 90);
+    }
+
+    #[test]
+    fn perfect_attempts_break_a_score_tie_and_repeated_finalization_is_stable() {
+        let (mut game, frog, cat) = live_match();
+        game.apply_verified_attempt(frog, 1, 11, 100, 80, 10)
+            .unwrap();
+        game.apply_verified_attempt(cat, 1, 21, 100, 80, 10)
+            .unwrap();
+        game.apply_verified_attempt(cat, 2, 22, 100, 80, 10)
+            .unwrap();
+        game.close_round(90).unwrap();
+        game.finalize(91).unwrap();
+        assert_eq!(game.team_scores, [100, 100]);
+        assert_eq!(game.outcome, MatchOutcome::Cat as u8);
+        game.finalize(120).unwrap();
+        assert_eq!(game.outcome, MatchOutcome::Cat as u8);
+        assert_eq!(game.finalized_at, 91);
+        assert!(game.buy_shares(frog, 0, 1, 1, 0, 120).is_err());
+        assert!(game
+            .apply_verified_attempt(frog, 2, 12, 100, 130, 120)
+            .is_err());
+    }
+
+    #[test]
+    fn equal_scores_and_perfect_counts_draw_and_bad_tallies_cannot_finalize() {
+        let (mut game, frog, cat) = live_match();
+        game.apply_verified_attempt(frog, 1, 11, 60, 80, 10)
+            .unwrap();
+        game.apply_verified_attempt(cat, 1, 21, 60, 80, 10).unwrap();
+        game.close_round(90).unwrap();
+        game.team_scores[0] = 61;
+        assert!(game.finalize(90).is_err());
+        assert_eq!(game.status, MatchStatus::Finalizing as u8);
+        assert_eq!(game.outcome, MatchOutcome::Pending as u8);
+        game.team_scores[0] = 60;
+        game.finalize(90).unwrap();
+        assert_eq!(game.outcome, MatchOutcome::Draw as u8);
     }
 }

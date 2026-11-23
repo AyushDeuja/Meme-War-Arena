@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "test:er:local": "node tests/er-lifecycle.mjs",
+    "test:phase6:local": "node tests/phase6-gameplay.mjs",
+    "test:settlement": "node client/settlement.test.mjs",
     "test:verifier": "node verifier/logic.test.mjs && node verifier/server.test.mjs"
   },
   "dependencies": {

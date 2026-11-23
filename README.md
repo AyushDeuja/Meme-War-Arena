@@ -26,12 +26,15 @@ updates, and later committed and undelegated to Solana.
 - `submit_verified_attempt`: records a score only when the player and the
   approved server verifier sign the same transaction. It enforces three
   attempts, one-use challenge nonces, valid scores, and the program deadline.
+- `finalize_match`: after close, computes the immutable skill-score winner.
+  Equal team scores use perfect-attempt counts, then Draw. Repeated calls
+  preserve the result. The terminal undelegation requires this finalized state.
 - `commit_match` and `undelegate_match`: schedule the MagicBlock settlement intent
   from the ER. Commit is allowed while live or finalizing; undelegation requires
   finalizing. Confirm base-layer completion separately.
 
-Winner calculation is a future phase.
-`Finalizing` still has a pending outcome; this is not yet a playable game.
+The winner is calculated onchain from verified scores, never market prices.
+The frontend and separate indicative portfolio leaderboard are later phases.
 
 ## Frontend
 
@@ -120,3 +123,10 @@ partially signed by its own key. The player signs those same transaction bytes
 before sending them to the ER. Only the pinned demo organizer may initialize
 new matches; its public key is in the program. Keep the verifier keypair outside
 the repository and browser environment.
+
+For the Phase 6 two-client chain test, start the documented local MagicBlock
+stack, deploy the program, then run `npm run test:phase6:local`. The test uses
+two independent wallet providers, trades and scores on ER, finalizes after
+the 90-second deadline, and checks the returned Solana account. It also retries
+an injected transient **read** failure without sending another settlement
+intent. `npm run test:settlement` checks the read-reconciliation helper.

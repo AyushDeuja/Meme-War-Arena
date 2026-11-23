@@ -65,6 +65,9 @@ function buyOutput(credits, shares, input) {
 
 function snapshot(state) {
   return {
+    status: state.status, outcome: state.outcome,
+    finalizedAt: String(state.finalizedAt),
+    teamScores: state.teamScores.map(String),
     creditReserves: state.creditReserves.map(String),
     shareReserves: state.shareReserves.map(String),
     players: state.players.slice(0, state.playerCount).map((player) => ({
@@ -430,6 +433,20 @@ async function main() {
   assert.equal(closedState.status, 2);
   assert.equal(closedState.outcome, 0);
   assert.equal(closedState.finalizedAt.toString(), "0");
+  const finalizeSignature = await erProgram.methods.finalizeMatch()
+    .accountsPartial({ game, caller: cat.publicKey }).signers([cat]).rpc();
+  console.log(`ER finalize: ${finalizeSignature}`);
+  const finalState = await erProgram.account.match.fetch(game);
+  assert.equal(finalState.status, 3);
+  assert.equal(finalState.outcome, 1);
+  assert.ok(finalState.finalizedAt.toNumber() >= finalState.endsAt.toNumber());
+  const finalSnapshot = snapshot(finalState);
+  assert.deepEqual(finalSnapshot.players, tradedSnapshot.players);
+  await erProgram.methods.finalizeMatch()
+    .accountsPartial({ game, caller: cat.publicKey }).signers([cat])
+    .preInstructions([web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 180_005 })])
+    .rpc();
+  assert.deepEqual(snapshot(await erProgram.account.match.fetch(game)), finalSnapshot);
 
   const commitSignature = await erProgram.methods
     .commitMatch()
@@ -440,8 +457,8 @@ async function main() {
   console.log(`Base commit: ${baseCommitSignature}`);
   await poll("committed state on base", async () => {
     const state = await baseProgram.account.match.fetch(game);
-    return state.playerCount === 8 && state.status === 2
-      && JSON.stringify(snapshot(state)) === JSON.stringify(tradedSnapshot) && state;
+    return state.playerCount === 8 && state.status === 3
+      && JSON.stringify(snapshot(state)) === JSON.stringify(finalSnapshot) && state;
   });
 
   const undelegateSignature = await erProgram.methods
@@ -455,8 +472,8 @@ async function main() {
     const account = await base.getAccountInfo(game);
     if (!account?.owner.equals(programId)) return false;
     const state = await baseProgram.account.match.fetch(game);
-    return state.playerCount === 8 && state.status === 2
-      && JSON.stringify(snapshot(state)) === JSON.stringify(tradedSnapshot) && state;
+    return state.playerCount === 8 && state.status === 3
+      && JSON.stringify(snapshot(state)) === JSON.stringify(finalSnapshot) && state;
   });
 
   verifierServer.close();
