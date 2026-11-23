@@ -3,11 +3,15 @@ use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 
+pub mod math;
+
 declare_id!("FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs");
 
 pub const MAX_PLAYERS: usize = 10;
 pub const ROUND_SECONDS: i64 = 90;
 pub const STARTING_CREDITS: u64 = 1_000;
+pub const INITIAL_CREDIT_RESERVE: u64 = 10_000;
+pub const INITIAL_SHARE_RESERVE: u64 = 1_000 * math::SHARE_SCALE;
 
 #[ephemeral]
 #[program]
@@ -15,13 +19,20 @@ pub mod meme_wars {
     use super::*;
 
     /// Create the durable match account on Solana before delegation.
-    pub fn initialize_match(ctx: Context<InitializeMatch>, match_id: u64) -> Result<()> {
+    pub fn initialize_match(
+        ctx: Context<InitializeMatch>,
+        match_id: u64,
+        verifier: Pubkey,
+    ) -> Result<()> {
+        require!(verifier != Pubkey::default(), GameError::InvalidVerifier);
         let game = &mut ctx.accounts.game;
         game.authority = ctx.accounts.authority.key();
+        game.verifier = verifier;
         game.match_id = match_id;
         game.status = MatchStatus::Scheduled as u8;
-        game.credit_reserves = [10_000; 2];
-        game.share_reserves = [1_000; 2];
+        game.outcome = MatchOutcome::Pending as u8;
+        game.credit_reserves = [INITIAL_CREDIT_RESERVE; 2];
+        game.share_reserves = [INITIAL_SHARE_RESERVE; 2];
         game.bump = ctx.bumps.game;
         Ok(())
     }
@@ -103,7 +114,7 @@ pub mod meme_wars {
 }
 
 #[derive(Accounts)]
-#[instruction(match_id: u64)]
+#[instruction(match_id: u64, verifier: Pubkey)]
 pub struct InitializeMatch<'info> {
     #[account(init, payer = authority, space = 8 + Match::LEN, seeds = [b"match", authority.key().as_ref(), &match_id.to_le_bytes()], bump)]
     pub game: Account<'info, Match>,
@@ -149,10 +160,13 @@ pub struct SettleMatch<'info> {
 #[account]
 pub struct Match {
     pub authority: Pubkey,
+    pub verifier: Pubkey,
     pub match_id: u64,
     pub status: u8,
+    pub outcome: u8,
     pub started_at: i64,
     pub ends_at: i64,
+    pub finalized_at: i64,
     pub credit_reserves: [u64; 2],
     pub share_reserves: [u64; 2],
     pub team_scores: [u64; 2],
@@ -163,7 +177,7 @@ pub struct Match {
 
 impl Match {
     pub const LEN: usize =
-        32 + 8 + 1 + 8 + 8 + 16 + 16 + 16 + PlayerSlot::LEN * MAX_PLAYERS + 1 + 1;
+        32 + 32 + 8 + 1 + 1 + 8 + 8 + 8 + 16 + 16 + 16 + PlayerSlot::LEN * MAX_PLAYERS + 1 + 1;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default)]
@@ -185,7 +199,16 @@ impl PlayerSlot {
 pub enum MatchStatus {
     Scheduled = 0,
     Live = 1,
-    Finalized = 2,
+    Finalizing = 2,
+    Finalized = 3,
+}
+
+#[repr(u8)]
+pub enum MatchOutcome {
+    Pending = 0,
+    Frog = 1,
+    Cat = 2,
+    Draw = 3,
 }
 
 #[error_code]
@@ -200,6 +223,8 @@ pub enum GameError {
     InvalidStatus,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("The verifier public key is invalid")]
+    InvalidVerifier,
 }
 
 #[cfg(test)]
@@ -209,29 +234,43 @@ mod baseline_tests {
     #[test]
     fn match_account_fits_declared_allocation_and_round_trips() {
         let authority = Pubkey::new_unique();
+        let verifier = Pubkey::new_unique();
+        let mut players = [PlayerSlot::default(); MAX_PLAYERS];
+        for (index, player) in players.iter_mut().enumerate() {
+            player.wallet = Pubkey::new_unique();
+            player.credits = STARTING_CREDITS;
+            player.team = if index < 5 { 1 } else { 2 };
+        }
         let game = Match {
             authority,
+            verifier,
             match_id: 7,
             status: MatchStatus::Scheduled as u8,
+            outcome: MatchOutcome::Pending as u8,
             started_at: 0,
             ends_at: 0,
-            credit_reserves: [10_000; 2],
-            share_reserves: [1_000; 2],
+            finalized_at: 0,
+            credit_reserves: [INITIAL_CREDIT_RESERVE; 2],
+            share_reserves: [INITIAL_SHARE_RESERVE; 2],
             team_scores: [0; 2],
-            players: [PlayerSlot::default(); MAX_PLAYERS],
-            player_count: 0,
+            players,
+            player_count: MAX_PLAYERS as u8,
             bump: 254,
         };
 
         let mut encoded = Vec::new();
         game.try_serialize(&mut encoded).unwrap();
+        assert_eq!(Match::LEN, 748);
         assert_eq!(encoded.len(), 8 + Match::LEN);
+        assert!(encoded.len() <= 10_240);
 
         let decoded = Match::try_deserialize(&mut encoded.as_slice()).unwrap();
         assert_eq!(decoded.authority, authority);
+        assert_eq!(decoded.verifier, verifier);
         assert_eq!(decoded.match_id, 7);
-        assert_eq!(decoded.credit_reserves, [10_000; 2]);
-        assert_eq!(decoded.share_reserves, [1_000; 2]);
-        assert_eq!(decoded.player_count, 0);
+        assert_eq!(decoded.credit_reserves, [INITIAL_CREDIT_RESERVE; 2]);
+        assert_eq!(decoded.share_reserves, [INITIAL_SHARE_RESERVE; 2]);
+        assert_eq!(decoded.player_count, MAX_PLAYERS as u8);
+        assert_eq!(decoded.players[9].team, 2);
     }
 }

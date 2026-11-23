@@ -33,6 +33,7 @@ async function main() {
   const programId = new web3.PublicKey(idl.address);
   const secretBytes = JSON.parse(await readFile(walletPath, "utf8"));
   const wallet = new Wallet(web3.Keypair.fromSecretKey(Uint8Array.from(secretBytes)));
+  const verifier = web3.Keypair.generate().publicKey;
   const base = new web3.Connection(baseUrl, "confirmed");
   const er = new web3.Connection(erUrl, "confirmed");
   const baseProgram = new Program(idl, new AnchorProvider(base, wallet, { commitment: "confirmed" }));
@@ -50,16 +51,21 @@ async function main() {
     programId,
   );
   console.log(`Program ${programId.toBase58()} | match ${matchId.toString()} | PDA ${game.toBase58()}`);
-  console.log(`Base ${baseUrl} | ER ${erUrl} | authority ${wallet.publicKey.toBase58()}`);
+  console.log(`Base ${baseUrl} | ER ${erUrl} | authority ${wallet.publicKey.toBase58()} | verifier ${verifier.toBase58()}`);
 
   const initSignature = await baseProgram.methods
-    .initializeMatch(matchId)
+    .initializeMatch(matchId, verifier)
     .accountsPartial({ game, authority: wallet.publicKey })
     .rpc();
   console.log(`Base initialize: ${initSignature}`);
   const initial = await baseProgram.account.match.fetch(game);
+  const initialAccount = await base.getAccountInfo(game);
+  assert.equal(initialAccount.data.length, 756);
   assert.equal(initial.playerCount, 0);
   assert.equal(initial.matchId.toString(), matchId.toString());
+  assert.equal(initial.verifier.toBase58(), verifier.toBase58());
+  assert.deepEqual(initial.creditReserves.map((value) => value.toString()), ["10000", "10000"]);
+  assert.deepEqual(initial.shareReserves.map((value) => value.toString()), ["1000000000", "1000000000"]);
 
   const delegateSignature = await baseProgram.methods
     .delegateMatch(matchId)
