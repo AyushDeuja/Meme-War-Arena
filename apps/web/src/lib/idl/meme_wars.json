@@ -1,0 +1,1279 @@
+{
+  "address": "FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs",
+  "metadata": {
+    "name": "meme_wars",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Meme Wars Arena onchain match state"
+  },
+  "instructions": [
+    {
+      "name": "buy_shares",
+      "docs": [
+        "Exchange virtual credits for shares in one of the two independent pools."
+      ],
+      "discriminator": [
+        40,
+        239,
+        138,
+        154,
+        8,
+        37,
+        106,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "pool",
+          "type": "u8"
+        },
+        {
+          "name": "credits_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_shares_out",
+          "type": "u64"
+        },
+        {
+          "name": "expected_nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "choose_team",
+      "docs": [
+        "Reserve one of five scoring slots for a registered wallet on the ER."
+      ],
+      "discriminator": [
+        172,
+        209,
+        139,
+        85,
+        137,
+        255,
+        212,
+        219
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "team",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "close_match",
+      "docs": [
+        "Anyone may close an expired round before finalization."
+      ],
+      "discriminator": [
+        79,
+        174,
+        36,
+        80,
+        233,
+        185,
+        176,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "caller",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "commit_match",
+      "docs": [
+        "Persist the current delegated state to Solana. Call on the ER."
+      ],
+      "discriminator": [
+        175,
+        146,
+        74,
+        234,
+        39,
+        25,
+        248,
+        114
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "game"
+          ]
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "delegate_match",
+      "docs": [
+        "The authority delegates the single writable match account on the base layer."
+      ],
+      "discriminator": [
+        30,
+        116,
+        9,
+        69,
+        147,
+        61,
+        133,
+        238
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "buffer_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                216,
+                64,
+                155,
+                16,
+                251,
+                140,
+                148,
+                117,
+                150,
+                149,
+                214,
+                135,
+                199,
+                251,
+                198,
+                145,
+                10,
+                198,
+                9,
+                40,
+                160,
+                20,
+                133,
+                152,
+                80,
+                136,
+                164,
+                110,
+                30,
+                181,
+                249,
+                96
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "match_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "match_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "finalize_match",
+      "docs": [
+        "Resolve the skill-score winner once; repeated calls preserve the result."
+      ],
+      "discriminator": [
+        6,
+        103,
+        47,
+        7,
+        66,
+        1,
+        85,
+        207
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "caller",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize_match",
+      "docs": [
+        "Create the durable match account on Solana before delegation."
+      ],
+      "discriminator": [
+        156,
+        133,
+        52,
+        179,
+        176,
+        29,
+        64,
+        124
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "match_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "match_id",
+          "type": "u64"
+        },
+        {
+          "name": "verifier",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "join_match",
+      "docs": [
+        "Run on the ER. Every wallet can claim the round allowance only once."
+      ],
+      "discriminator": [
+        244,
+        8,
+        47,
+        130,
+        192,
+        59,
+        179,
+        44
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "process_undelegation",
+      "discriminator": [
+        196,
+        28,
+        41,
+        206,
+        48,
+        37,
+        51,
+        167
+      ],
+      "accounts": [
+        {
+          "name": "base_account",
+          "writable": true
+        },
+        {
+          "name": "buffer",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  110,
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  101,
+                  45,
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "base_account"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                181,
+                183,
+                0,
+                225,
+                242,
+                87,
+                58,
+                192,
+                204,
+                6,
+                34,
+                1,
+                52,
+                74,
+                207,
+                151,
+                184,
+                53,
+                6,
+                235,
+                140,
+                229,
+                25,
+                152,
+                204,
+                98,
+                126,
+                24,
+                147,
+                128,
+                167,
+                62
+              ]
+            }
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "account_seeds",
+          "type": {
+            "vec": "bytes"
+          }
+        }
+      ]
+    },
+    {
+      "name": "sell_shares",
+      "docs": [
+        "Exchange owned virtual shares for credits in the selected pool."
+      ],
+      "discriminator": [
+        184,
+        164,
+        169,
+        16,
+        231,
+        158,
+        199,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "pool",
+          "type": "u8"
+        },
+        {
+          "name": "shares_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_credits_out",
+          "type": "u64"
+        },
+        {
+          "name": "expected_nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "start_match",
+      "docs": [
+        "Start the 90-second round on the ER after players have joined."
+      ],
+      "discriminator": [
+        100,
+        246,
+        223,
+        181,
+        176,
+        101,
+        255,
+        19
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "game"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "submit_verified_attempt",
+      "docs": [
+        "Apply a server-measured result signed by both the player and approved verifier."
+      ],
+      "discriminator": [
+        108,
+        242,
+        43,
+        113,
+        183,
+        30,
+        63,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "signer": true
+        },
+        {
+          "name": "verifier",
+          "signer": true,
+          "relations": [
+            "game"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "attempt_index",
+          "type": "u8"
+        },
+        {
+          "name": "challenge_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "score",
+          "type": "u16"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "undelegate_match",
+      "docs": [
+        "Return ownership to this program and settle final state. Call on the ER."
+      ],
+      "discriminator": [
+        142,
+        117,
+        126,
+        27,
+        242,
+        11,
+        103,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.authority",
+                "account": "Match"
+              },
+              {
+                "kind": "account",
+                "path": "game.match_id",
+                "account": "Match"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "game"
+          ]
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Match",
+      "discriminator": [
+        236,
+        63,
+        169,
+        38,
+        15,
+        56,
+        196,
+        162
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Closed",
+      "msg": "The match is closed"
+    },
+    {
+      "code": 6001,
+      "name": "AlreadyJoined",
+      "msg": "This wallet already joined"
+    },
+    {
+      "code": 6002,
+      "name": "Full",
+      "msg": "The match is full"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidStatus",
+      "msg": "The match is in the wrong state"
+    },
+    {
+      "code": 6004,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidVerifier",
+      "msg": "The verifier public key is invalid"
+    },
+    {
+      "code": 6006,
+      "name": "NotRegistered",
+      "msg": "The player has not joined this match"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidTeam",
+      "msg": "Choose Frog or Cat"
+    },
+    {
+      "code": 6008,
+      "name": "TeamAlreadyChosen",
+      "msg": "The player already chose a team"
+    },
+    {
+      "code": 6009,
+      "name": "TeamFull",
+      "msg": "This team's roster is full"
+    },
+    {
+      "code": 6010,
+      "name": "TeamsMissing",
+      "msg": "Both teams need a player before the match starts"
+    },
+    {
+      "code": 6011,
+      "name": "TooEarly",
+      "msg": "The match deadline has not arrived"
+    },
+    {
+      "code": 6012,
+      "name": "InvalidPool",
+      "msg": "Choose Frog or Cat pool"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidTradeAmount",
+      "msg": "Trade input or minimum output is outside its allowed range"
+    },
+    {
+      "code": 6014,
+      "name": "InsufficientCredits",
+      "msg": "This wallet has insufficient virtual credits"
+    },
+    {
+      "code": 6015,
+      "name": "InsufficientShares",
+      "msg": "This wallet has insufficient virtual shares"
+    },
+    {
+      "code": 6016,
+      "name": "SlippageExceeded",
+      "msg": "The trade output is below the requested minimum"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidNonce",
+      "msg": "The trade nonce does not match"
+    },
+    {
+      "code": 6018,
+      "name": "EmptyReserve",
+      "msg": "A virtual pool reserve is empty"
+    },
+    {
+      "code": 6019,
+      "name": "ZeroOutput",
+      "msg": "The trade would produce zero output"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidOrganizer",
+      "msg": "Only the approved demo organizer may create a match"
+    },
+    {
+      "code": 6021,
+      "name": "TeamNotChosen",
+      "msg": "The scoring team has not been chosen"
+    },
+    {
+      "code": 6022,
+      "name": "AttemptExpired",
+      "msg": "The timing challenge result has expired"
+    },
+    {
+      "code": 6023,
+      "name": "InvalidScore",
+      "msg": "The timing score is invalid"
+    },
+    {
+      "code": 6024,
+      "name": "InvalidChallengeNonce",
+      "msg": "The timing challenge nonce is invalid or already used"
+    },
+    {
+      "code": 6025,
+      "name": "AttemptLimit",
+      "msg": "The three-attempt limit has been reached"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidAttemptIndex",
+      "msg": "The attempt index is not next in sequence"
+    },
+    {
+      "code": 6027,
+      "name": "InconsistentScore",
+      "msg": "Stored team score does not match verified player scores"
+    }
+  ],
+  "types": [
+    {
+      "name": "Match",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "verifier",
+            "type": "pubkey"
+          },
+          {
+            "name": "match_id",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "started_at",
+            "type": "i64"
+          },
+          {
+            "name": "ends_at",
+            "type": "i64"
+          },
+          {
+            "name": "finalized_at",
+            "type": "i64"
+          },
+          {
+            "name": "credit_reserves",
+            "type": {
+              "array": [
+                "u64",
+                2
+              ]
+            }
+          },
+          {
+            "name": "share_reserves",
+            "type": {
+              "array": [
+                "u64",
+                2
+              ]
+            }
+          },
+          {
+            "name": "team_scores",
+            "type": {
+              "array": [
+                "u64",
+                2
+              ]
+            }
+          },
+          {
+            "name": "players",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "PlayerSlot"
+                  }
+                },
+                10
+              ]
+            }
+          },
+          {
+            "name": "player_count",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlayerSlot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "credits",
+            "type": "u64"
+          },
+          {
+            "name": "frog_shares",
+            "type": "u64"
+          },
+          {
+            "name": "cat_shares",
+            "type": "u64"
+          },
+          {
+            "name": "team",
+            "type": "u8"
+          },
+          {
+            "name": "best_score",
+            "type": "u16"
+          },
+          {
+            "name": "attempts_used",
+            "type": "u8"
+          },
+          {
+            "name": "trade_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "used_challenge_nonces",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "perfect_attempts",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
