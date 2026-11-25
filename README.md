@@ -30,18 +30,20 @@ updates, and later committed and undelegated to Solana.
   Equal team scores use perfect-attempt counts, then Draw. Repeated calls
   preserve the result. The terminal undelegation requires this finalized state.
 - `commit_match` and `undelegate_match`: schedule the MagicBlock settlement intent
-  from the ER. Commit is allowed while live or finalizing; undelegation requires
-  finalizing. Confirm base-layer completion separately.
+  from the ER. Commit is allowed while live, finalizing, or finalized; undelegation requires
+  finalized status. Confirm base-layer completion separately.
 
 The winner is calculated onchain from verified scores, never market prices.
-The frontend and separate indicative portfolio leaderboard are later phases.
+The frontend displays a separate indicative virtual portfolio leaderboard after
+finalization. The organizer can send terminal ER settlement from the Results
+page; the proof page shows verified ER and Solana transaction references.
 
 ## Frontend
 
 The Next.js app lives in `apps/web`. It uses TypeScript, Tailwind CSS, ESLint,
-and the App Router. Its lobby (`/`), arena (`/arena/[id]`), and results
-(`/results/[id]`) routes are placeholders for the game UI; wallet and program
-calls have not been connected.
+and the App Router. Its lobby (`/`), arena (`/arena/[id]`), results
+(`/results/[id]`), and settlement proof (`/results/[id]/proof`) routes read
+real program state. See `apps/web/README.md` for the local two-wallet flow.
 
 ```sh
 cd apps/web

@@ -214,27 +214,36 @@ async function main() {
     console.log(`ER duplicate finalize: ${duplicateFinalize}`);
     assert.deepEqual(snapshot(await readBoth()), finalSnapshot);
 
-    const commitIntent = await clientA.methods.commitMatch()
-      .accountsPartial({ game, authority: authority.publicKey }).rpc();
-    console.log(`ER commit intent: ${commitIntent}`);
-    let injectedReadFailure = true;
-    const committed = await reconcileSettlement({
-      intentSignature: commitIntent,
-      getBaseSignature: (signature) => GetCommitmentSignature(signature, erA),
-      readBase: async () => {
-        if (injectedReadFailure) {
-          injectedReadFailure = false;
-          throw new Error("injected transient base RPC read failure");
-        }
-        const [account, state] = await Promise.all([base.getAccountInfo(game), baseProgram.account.match.fetch(game)]);
-        return { owner: account.owner.toBase58(), state };
-      },
-      matches: ({ owner, state }) => owner === DELEGATION_PROGRAM_ID.toBase58()
-        && JSON.stringify(snapshot(state)) === JSON.stringify(finalSnapshot),
-    });
-    assert.ok(!injectedReadFailure);
-    assert.ok(committed.baseSignature);
-    console.log(`Base commit: ${committed.baseSignature}`);
+    const proofApi = process.env.PROOF_API_URL;
+    if (proofApi) {
+      const prepared = await post(proofApi, `/api/results/${game}/proof`, { action: "prepare" });
+      assert.equal(prepared.status, "pending");
+      assert.ok(!prepared.intentSignature);
+    }
+
+    if (!process.env.PHASE8_TERMINAL_ONLY) {
+      const commitIntent = await clientA.methods.commitMatch()
+        .accountsPartial({ game, authority: authority.publicKey }).rpc();
+      console.log(`ER commit intent: ${commitIntent}`);
+      let injectedReadFailure = true;
+      const committed = await reconcileSettlement({
+        intentSignature: commitIntent,
+        getBaseSignature: (signature) => GetCommitmentSignature(signature, erA),
+        readBase: async () => {
+          if (injectedReadFailure) {
+            injectedReadFailure = false;
+            throw new Error("injected transient base RPC read failure");
+          }
+          const [account, state] = await Promise.all([base.getAccountInfo(game), baseProgram.account.match.fetch(game)]);
+          return { owner: account.owner.toBase58(), state };
+        },
+        matches: ({ owner, state }) => owner === DELEGATION_PROGRAM_ID.toBase58()
+          && JSON.stringify(snapshot(state)) === JSON.stringify(finalSnapshot),
+      });
+      assert.ok(!injectedReadFailure);
+      assert.ok(committed.baseSignature);
+      console.log(`Base commit: ${committed.baseSignature}`);
+    }
 
     const undelegateIntent = await clientA.methods.undelegateMatch()
       .accountsPartial({ game, authority: authority.publicKey }).rpc();
@@ -251,6 +260,15 @@ async function main() {
     });
     assert.ok(undelegated.baseSignature);
     console.log(`Base undelegate: ${undelegated.baseSignature}`);
+    if (proofApi) {
+      const proof = await post(proofApi, `/api/results/${game}/proof`, { action: "verify", intentSignature: undelegateIntent });
+      assert.equal(proof.status, "verified");
+      assert.equal(proof.baseSignature, undelegated.baseSignature);
+      const reloaded = await (await fetch(`${proofApi}/api/results/${game}/proof`)).json();
+      assert.equal(reloaded.status, "verified");
+      assert.equal(reloaded.baseSignature, undelegated.baseSignature);
+      console.log(`Proof page: ${proofApi}/results/${game}/proof`);
+    }
     console.log("PASS: two independent ER clients, finalized winner, and exact Solana settlement");
   } finally {
     verifierServer.close();

@@ -19,6 +19,7 @@
 
 # production
 /build
+/.proofs/
 
 # misc
 .DS_Store
