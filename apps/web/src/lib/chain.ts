@@ -1,6 +1,7 @@
 import { AnchorProvider, BN, Program, type Idl } from "@coral-xyz/anchor";
 import { DELEGATION_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Connection, PublicKey, Transaction, type SendOptions } from "@solana/web3.js";
+import bs58 from "bs58";
 import type { WalletContextState } from "@solana/wallet-adapter-react";
 import idlJson from "./idl/meme_wars.json";
 
@@ -43,7 +44,7 @@ export async function fetchMatch(id: string): Promise<{ state: Match; layer: "ER
   return { state, layer: delegated ? "ER" : "Solana" };
 }
 
-export async function sendGameAction(wallet: WalletContextState, id: string, build: (program: Program<Idl>, key: PublicKey) => Promise<Transaction>) {
+export async function sendGameAction(wallet: WalletContextState, id: string, build: (program: Program<Idl>, key: PublicKey) => Promise<Transaction>, onSigned?: (signature: string) => void) {
   if (!wallet.publicKey || !wallet.signTransaction) throw new Error("Connect a wallet that supports transaction signing");
   const { layer } = await fetchMatch(id);
   if (layer !== "ER") throw new Error("This match is not delegated to the ER");
@@ -58,6 +59,11 @@ export async function sendGameAction(wallet: WalletContextState, id: string, bui
   tx.feePayer = wallet.publicKey;
   tx.recentBlockhash = (await er.getLatestBlockhash("confirmed")).blockhash;
   const signed = await wallet.signTransaction(tx);
+  if (onSigned) {
+    const signature = signed.signatures.find((entry) => entry.publicKey.equals(wallet.publicKey!))?.signature;
+    if (!signature) throw new Error("Wallet did not sign the settlement transaction");
+    onSigned(bs58.encode(signature));
+  }
   const signature = await er.sendRawTransaction(signed.serialize(), { skipPreflight: false } as SendOptions);
   const result = await er.confirmTransaction(signature, "confirmed");
   if (result.value.err) throw new Error(`Transaction failed: ${JSON.stringify(result.value.err)}`);
