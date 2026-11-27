@@ -68,7 +68,8 @@ needed. From this directory:
 
 ```sh
 cargo check -p meme-wars
-anchor build
+anchor build --no-idl -- --arch v0
+anchor idl build -o target/idl/meme_wars.json -t target/types/meme_wars.ts
 ```
 
 `Anchor.toml` points to a local validator and the generated program ID. The
@@ -83,11 +84,15 @@ Anchor CLI 1.0.2 there, with the existing Agave CLI and Node 22 from nvm:
 cd '/mnt/c/Users/ayush/OneDrive/Desktop/Meme War Arena'
 . ~/.nvm/nvm.sh
 nvm use 22.22.3
-anchor build
-anchor test
+anchor build --no-idl -- --arch v0
+anchor idl build -o target/idl/meme_wars.json -t target/types/meme_wars.ts
+anchor test --skip-build
 ```
 
-Node must be on `PATH` for `anchor test` to launch the script in `Anchor.toml`,
+The installed SBF platform tools v1.52 require `--arch v0`. Anchor 1.0.2
+forwards build arguments to IDL generation, so generate the IDL separately.
+
+Node must be on `PATH` for `anchor test --skip-build` to launch the script in `Anchor.toml`,
 even though that script runs Rust tests. See [the Phase 0 baseline](docs/phase-0-baseline.md)
 for the exact tested versions and limits of this verification.
 

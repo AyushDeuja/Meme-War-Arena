@@ -113,3 +113,75 @@ RISKS/BLOCKERS: The current WSL `active_release` Agave 3.1.10 breaks MagicBlock 
 GO / NO-GO: **NO-GO for browser acceptance** until the organizer signs terminal settlement through the Results page and both browsers confirm the result, portfolio order, and proof after refresh. Code, build, and real chain settlement/proof gates passed.
 
 NEXT PHASE (do not start): Phase 9 after Phase 8 browser acceptance receives GO.
+
+## Demo documentation request — no new phase implementation
+
+PHASE: Documentation-only request (2026-11-25); Phase 8 browser acceptance status is unchanged.
+
+CHANGED FILES: `script.md`, `frontend-startup.md`, and this log.
+
+COMMANDS EXECUTED: `git status --short`, `git diff --check` (passed), file-existence checks for both new Markdown files, and read-only searches of manifests, setup script, UI labels, requirements, and prior phase log. No build, validator, browser transaction, or recording command was run for this documentation request.
+
+PASS/FAIL/SKIPPED: PASS — the video script uses current UI actions and labels, distinguishes skill winner from virtual portfolio rank, and shows real ER-to-Solana proof only after verification; the startup guide names the tested local RPCs, Agave 4.3.2 path, required key files, match preparation, verifier, Next.js, two-wallet flow, and recovery steps. SKIPPED — a new live demo recording and browser wallet signing.
+
+CHAIN VERIFICATION: Not applicable to this documentation-only change; the Phase 8 chain evidence above remains the last executed settlement test.
+
+RISKS/BLOCKERS: A clean checkout needs the original ignored program keypair for the pinned program ID. The video should not show settlement as verified until the browser proof page confirms it. Phase 8's organizer-button browser acceptance remains pending in this log.
+
+GO / NO-GO: **GO for the requested documentation**. This does not change the Phase 8 browser-acceptance NO-GO above.
+
+NEXT PHASE (do not start): Phase 9 only after Phase 8 browser acceptance receives GO.
+
+## Demo script PDF export — no new phase implementation
+
+PHASE: Documentation artifact (2026-11-25); Phase 8 browser acceptance status is unchanged.
+
+CHANGED FILES: `script.pdf` and this log. `script.md` was the input and was not edited for this export.
+
+COMMANDS EXECUTED: Read `script.md`; checked local PDF tool availability; `python .render-script-pdf.py` generated the PDF (temporary generator subsequently removed); Python structural validation checked `%PDF-1.4`, two page objects, all 10 shot labels, and `%%EOF`; `git status --short` inspected the result. No build or blockchain transaction was run.
+
+PASS/FAIL/SKIPPED: PASS — two-page PDF created from the Markdown, with all ten timed shots and five recording notes. SKIPPED — rendered visual inspection because no PDF renderer was available in the current tool environment.
+
+CHAIN VERIFICATION: Not applicable.
+
+RISKS/BLOCKERS: None for the PDF export. The outstanding Phase 8 browser settlement acceptance is unchanged.
+
+GO / NO-GO: **GO for the requested PDF artifact**.
+
+NEXT PHASE (do not start): Phase 9 only after Phase 8 browser acceptance receives GO.
+
+## Local SBF build troubleshooting — no new phase implementation
+
+PHASE: Build and demo documentation correction (2026-11-25); Phase 8 browser acceptance is unchanged.
+
+CHANGED FILES: `README.md`, `frontend-startup.md`, the ignored `apps/web/.env.local`, and this log. Generated files under ignored `target/` were rebuilt locally.
+
+COMMANDS EXECUTED: Inspected `anchor build --help`, `cargo build-sbf --help`, and `anchor idl build --help` in WSL; `anchor build -- --arch v0` (SBF compilation finished, then IDL generation failed because `--arch` was forwarded to `cargo test`); `anchor build --no-idl -- --arch v0` (passed); `anchor idl build -o target/idl/meme_wars.json -t target/types/meme_wars.ts` (passed); inspected generated file timestamps and repository diff; set `NEXT_PUBLIC_MATCH_PDA` in `apps/web/.env.local` to the user's new match and verified the line with `rg`; `git diff --check` (passed). The user's terminal output separately reports a local RPC airdrop, deploy, and match preparation; these transactions were not rerun here.
+
+PASS/FAIL/SKIPPED: PASS — fresh `target/deploy/meme_wars.so` built for SBPF v0 and IDL/TypeScript files regenerated. FAIL — plain `anchor build` in the user's environment and combined `anchor build -- --arch v0` because of the IDL argument forwarding. SKIPPED — redeployment, new match creation, and browser checks; the user already has an active local match.
+
+CHAIN VERIFICATION: User-reported local deployment ID `FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs`, match PDA `AzuMjbKciZCaeXks5L3p1v6eNJ2GEUAkAgP8zWeuodEB`, initialize signature `4HkDHhbqtENoLf6Wcf1Hu9mn93snjmuNb4WTpFoXCgYfDMi9Rg2LbexLuHFQXpdUBx9iEWXxzFiRqworRnC8FWPq`, and delegate signature `3YGJZvbb45Dpchxzz5PDBcVpLTxpwq47rmhSQsAjqGU4BJYgTfyt45fHwDtAVLkX471CPJjZfodk5jpGGBPNfMF7`. The user's successful deploy preceded the fresh build and used the earlier `.so` artifact.
+
+RISKS/BLOCKERS: The currently deployed program was not redeployed from the newly built artifact. This is not required to keep testing the existing match if program source was unchanged. The `cdylib`/`lib` LTO warning is informational. Phase 8's browser settlement acceptance remains pending in this log.
+
+GO / NO-GO: GO for the corrected local build and startup instructions; NO-GO for claiming the current deployment used the newly built artifact or that Phase 8 browser acceptance has been verified.
+
+NEXT PHASE (do not start): Phase 9 only after Phase 8 browser acceptance receives GO.
+
+## Devnet program deployment — no new phase implementation
+
+PHASE: Deployment-only request (2026-11-27); Phase 8 browser acceptance status is unchanged.
+
+CHANGED FILES: `docs/phase-log.md`. The program binary under ignored `target/deploy/` was rebuilt; no source code or frontend configuration changed.
+
+COMMANDS EXECUTED: Read the project plans, MagicBlock skill, workspace manifests and status; `wsl -d Ubuntu --cd <repo> -- bash -lc '... solana --version; anchor --version; solana-keygen pubkey target/deploy/meme_wars-keypair.json; solana config get; solana-keygen pubkey ~/.config/solana/id.json; sha256sum target/deploy/meme_wars.so'` (passed after a sandbox-denied first attempt); `solana balance <organizer> --url https://api.devnet.solana.com` (5.013654889 SOL before deployment); `solana program show <program> --url https://api.devnet.solana.com` (account absent before deployment); `solana rent 377928 --url https://api.devnet.solana.com` (1.92052448 SOL estimate); `anchor build --no-idl -- --arch v0` (passed); `solana program deploy target/deploy/meme_wars.so --program-id target/deploy/meme_wars-keypair.json --url https://api.devnet.solana.com --keypair ~/.config/solana/id.json` (passed); `solana confirm <deployment signature> --url https://api.devnet.solana.com -v` (finalized, status Ok); `solana program show <program> --url https://api.devnet.solana.com` (passed); final wallet balance and binary SHA-256 checks (passed).
+
+PASS/FAIL/SKIPPED: PASS — current source built and the expected upgradeable program ID deployed on devnet. Devnet transaction finalized in slot 526798383. SKIPPED — match creation, MagicBlock devnet delegation, ER gameplay, settlement, and browser acceptance; this request deployed only the program.
+
+CHAIN VERIFICATION: Devnet program `FZACcydNJBwxXUGYB1u5tRFWtmriR97PuBTYnPVskAWs`; deployment signature `2bRG1pvntovhyGpRpxf5X7V4eipA23ChJxfavQiGyCGp2nZn1UXMrQSx4ncMmg6umArNPKwkgJh9XBWAhGjKm5wy`; finalized slot 526798383; upgrade authority `7QKBd6PsJ8qsybo5BEA41gh8sPp6YhMBteRdteVyiSgm`; program data length 377928 bytes. Rebuilt binary SHA-256 `f95b34fc9355f1bbfeb4767cd674575370a2d143279cab235e2d03330fb5abad`. Organizer wallet balance after deployment: 3.090178689 SOL.
+
+RISKS/BLOCKERS: Program deployment alone is not MagicBlock devnet integration proof. The current web `.env.local` still targets local RPC/ER; its featured match is a local PDA. The program initializer accepts only the pinned organizer address. Phase 8 browser settlement acceptance remains pending.
+
+GO / NO-GO: GO for the requested devnet program deployment; NO-GO for claiming a complete devnet ER match or settlement.
+
+NEXT PHASE (do not start): Phase 9 only after Phase 8 browser acceptance receives GO.
